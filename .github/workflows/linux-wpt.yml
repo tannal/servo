@@ -1,5 +1,6 @@
 name: Linux WPT Tests
 on:
+  workflow_dispatch:
   workflow_call:
     inputs:
       profile:
