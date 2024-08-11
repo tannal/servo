@@ -406,7 +406,6 @@ impl FloatContext {
             if next_band.top == MAX_AU {
                 break;
             }
-            first_band = next_band;
         }
 
         // The object fits perfectly here. Place it.
