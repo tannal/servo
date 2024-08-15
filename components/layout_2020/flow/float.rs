@@ -403,9 +403,10 @@ impl FloatContext {
         let mut first_band = self.bands.find(ceiling).unwrap();
         while !first_band.object_fits(object, &self.containing_block_info) {
             let next_band = self.bands.find_next(first_band.top).unwrap();
-            if next_band.top == MAX_AU {
-                break;
-            }
+            // if next_band.top == MAX_AU {
+            //     break;
+            // }
+            first_band = next_band;
         }
 
         // The object fits perfectly here. Place it.
