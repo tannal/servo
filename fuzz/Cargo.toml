@@ -1,0 +1,29 @@
+[package]
+name = "servo-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2021"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+dpi = { workspace =  true }
+url = { workspace = true }
+servo-default-resources = { path = "../components/default-resources/"}
+servo = { workspace = true }
+
+[[bin]]
+name = "html_parser_target"
+path = "fuzz_targets/html_parser_target.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "servo_parse_html"
+path = "fuzz_targets/servo_parse_html.rs"
+test = false
+doc = false
+bench = false

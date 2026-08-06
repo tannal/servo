@@ -8,6 +8,7 @@ members = [
     "ports/servoshell",
     "tests/capi",
     "tests/unit/*",
+    "fuzz/",
 ]
 default-members = ["ports/servoshell"]
 exclude = [".cargo", "support/crown"]
@@ -92,7 +93,7 @@ flate2 = "1.1"
 font-types = "0.12"
 fontconfig_sys = { package = "yeslogic-fontconfig-sys", version = "6" }
 fontsan = { version = "0.7", default-features = false, features = ["libz-sys", "wuff"] }
-freetype-sys = "0.23"
+freetype-sys = { version = "0.23", features = ["bundled"] }
 fst = "0.4"
 futures = { version = "0.3", default-features = false }
 futures-core = { version = "0.3", default-features = false }
