@@ -8872,6 +8872,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "servo-fuzz"
+version = "0.0.0"
+dependencies = [
+ "dpi",
+ "libfuzzer-sys",
+ "servo",
+ "servo-default-resources",
+ "url",
+]
+
+[[package]]
 name = "servo-geometry"
 version = "0.7.0"
 dependencies = [

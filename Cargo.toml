@@ -8,6 +8,7 @@ members = [
     "ports/servoshell",
     "tests/capi",
     "tests/unit/*",
+    "fuzz/",
 ]
 default-members = ["ports/servoshell"]
 exclude = [".cargo", "support/crown"]
