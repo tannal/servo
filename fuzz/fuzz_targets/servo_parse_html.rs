@@ -1,38 +1,26 @@
 #![no_main]
 
 use std::cell::RefCell;
+use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, OnceLock};
-use std::time::Duration;
 
 use dpi::PhysicalSize;
 use libfuzzer_sys::fuzz_target;
+use servo::resources::{Resource, ResourceReaderMethods};
 use servo::{
-    EventLoopWaker, JSValue, JavaScriptEvaluationError, LoadStatus, RenderingContext, Servo,
-    ServoBuilder, SoftwareRenderingContext, WebViewBuilder,
+    EventLoopWaker, LoadStatus, RenderingContext, Servo, ServoBuilder,
+    SoftwareRenderingContext, WebView, WebViewBuilder, submit_resource_reader,
 };
 use url::Url;
-use std::path::PathBuf;
-
-use servo::{submit_resource_reader, resources::{
-    Resource, ResourceReaderMethods,
-}};
 
 struct FuzzResourceReader;
 
 impl ResourceReaderMethods for FuzzResourceReader {
-    fn read(&self, _res: Resource) -> Vec<u8> {
-        vec![]
-    }
-
-    fn sandbox_access_files(&self) -> Vec<PathBuf> {
-        vec![]
-    }
-
-    fn sandbox_access_files_dirs(&self) -> Vec<PathBuf> {
-        vec![]
-    }
+    fn read(&self, _res: Resource) -> Vec<u8> { vec![] }
+    fn sandbox_access_files(&self) -> Vec<PathBuf> { vec![] }
+    fn sandbox_access_files_dirs(&self) -> Vec<PathBuf> { vec![] }
 }
 
 static FUZZ_RESOURCE_READER: FuzzResourceReader = FuzzResourceReader;
@@ -40,37 +28,22 @@ submit_resource_reader!(&FUZZ_RESOURCE_READER);
 
 pub struct ServoFuzzerHelper {
     servo: Servo,
-    rendering_context: Rc<SoftwareRenderingContext>,
-}
-
-impl Drop for ServoFuzzerHelper {
-    fn drop(&mut self) {
-        self.servo.spin_event_loop();
-        std::thread::sleep(Duration::from_millis(1));
-    }
+    webview: WebView,
 }
 
 impl ServoFuzzerHelper {
     pub fn new() -> Self {
         let rendering_context = Rc::new(
-            SoftwareRenderingContext::new(PhysicalSize {
-                width: 800,
-                height: 600,
-            })
-            .expect("Could not create SoftwareRenderingContext"),
+            SoftwareRenderingContext::new(PhysicalSize { width: 100, height: 100 })
+                .expect("Could not create SoftwareRenderingContext"),
         );
         assert!(rendering_context.make_current().is_ok());
 
         #[derive(Clone)]
         struct EventLoopWakerImpl(Arc<AtomicBool>);
         impl EventLoopWaker for EventLoopWakerImpl {
-            fn clone_box(&self) -> Box<dyn EventLoopWaker> {
-                Box::new(self.clone())
-            }
-
-            fn wake(&self) {
-                self.0.store(true, Ordering::Relaxed);
-            }
+            fn clone_box(&self) -> Box<dyn EventLoopWaker> { Box::new(self.clone()) }
+            fn wake(&self) { self.0.store(true, Ordering::Relaxed); }
         }
 
         let user_event_triggered = Arc::new(AtomicBool::new(false));
@@ -78,67 +51,34 @@ impl ServoFuzzerHelper {
             .event_loop_waker(Box::new(EventLoopWakerImpl(user_event_triggered)))
             .build();
 
-        Self {
-            servo,
-            rendering_context,
-        }
-    }
+        let webview = WebViewBuilder::new(&servo, rendering_context).build();
 
-    pub fn servo(&self) -> &Servo {
-        &self.servo
-    }
-
-    pub fn spin<F>(&self, callback: F)
-    where
-        F: Fn() -> bool + 'static,
-    {
-        while callback() {
-            std::thread::sleep(Duration::from_millis(1));
-            self.servo.spin_event_loop();
-        }
+        Self { servo, webview }
     }
 
     pub fn load_html(&self, html_content: &str) {
-        let webview = WebViewBuilder::new(&self.servo, self.rendering_context.clone()).build();
+        if html_content.len() > 8192 {
+            return;
+        }
 
         let data_url_str = format!("data:text/html;charset=utf-8,{}", html_content);
-
         let url = match Url::parse(&data_url_str) {
             Ok(u) => u,
             Err(_) => return,
         };
 
-        webview.load(url);
+        self.webview.load(url);
 
-        let load_webview = webview.clone();
-        self.spin(move || load_webview.load_status() != LoadStatus::Complete);
-    }
-
-    pub fn eval_js(&self, script: &str) -> Result<JSValue, JavaScriptEvaluationError> {
-        let webview = WebViewBuilder::new(&self.servo, self.rendering_context.clone()).build();
-        
-        self.load_html("<html><body></body></html>");
-
-        let saved_result = Rc::new(RefCell::new(None));
-        let callback_result = saved_result.clone();
-        webview.evaluate_javascript(script.to_string(), move |result| {
-            *callback_result.borrow_mut() = Some(result);
-        });
-
-        let spin_result = saved_result.clone();
-        self.spin(move || spin_result.borrow().is_none());
-
-        let result = saved_result
-            .borrow()
-            .clone()
-            .expect("Should have waited until value available");
-
-        result
+        let mut max_spins = 1000;
+        while self.webview.load_status() != LoadStatus::Complete && max_spins > 0 {
+            self.servo.spin_event_loop();
+            max_spins -= 1;
+        }
     }
 }
 
 thread_local! {
-    static SERVO_INSTANCE: OnceLock<ServoFuzzerHelper> = OnceLock::new();
+    static SERVO_INSTANCE: ServoFuzzerHelper = ServoFuzzerHelper::new();
 }
 
 fuzz_target!(|data: &[u8]| {
@@ -147,11 +87,7 @@ fuzz_target!(|data: &[u8]| {
         Err(_) => return,
     };
 
-    SERVO_INSTANCE.with(|cell| {
-        let helper = cell.get_or_init(|| ServoFuzzerHelper::new());
-
+    SERVO_INSTANCE.with(|helper| {
         helper.load_html(input_str);
-
-        // let _ = helper.eval_js(input_str);
     });
 });
