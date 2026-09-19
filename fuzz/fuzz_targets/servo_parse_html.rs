@@ -96,12 +96,11 @@ impl ServoFuzzerHelper {
             webview.load(url);
 
             let mut idle_spins = 0;
-            let max_idle_spins = 40;
+            let max_idle_spins = 50;
             let mut painted = false;
 
             loop {
                 self.servo.spin_event_loop();
-
                 let is_complete = webview.load_status() == LoadStatus::Complete;
 
                 if is_complete && !painted {
@@ -109,14 +108,16 @@ impl ServoFuzzerHelper {
                     painted = true;
                 }
 
-                if is_complete && frame_ready.load(Ordering::Relaxed) {
+                if painted && frame_ready.load(Ordering::Relaxed) {
                     break;
                 }
 
                 if self.waker_triggered.swap(false, Ordering::Relaxed) {
                     idle_spins = 0;
                 } else {
-                    idle_spins += 1;
+                    if painted {
+                        idle_spins += 1;
+                    }
                 }
 
                 if idle_spins >= max_idle_spins {
