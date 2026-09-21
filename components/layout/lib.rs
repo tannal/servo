@@ -34,6 +34,7 @@ mod sizing;
 mod style_ext;
 pub mod table;
 mod traversal;
+pub(crate) mod mathml;
 
 use app_units::Au;
 pub use cell::ArcRefCell;

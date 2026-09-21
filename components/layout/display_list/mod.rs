@@ -63,6 +63,7 @@ use crate::fragment_tree::{
     BackgroundMode, BaseFragment, BoxFragment, BoxFragmentWithStyle,
     CumulativeContentRectCalculation, Fragment, FragmentFlags, FragmentStatus, FragmentTree,
     IFrameFragment, ImageFragment, PositioningFragment, SpecificLayoutInfo, Tag, TextFragment,
+    ContainingBlockCalculation, Fragment, FragmentFlags, FragmentStatus, FragmentTree, IFrameFragment, ImageFragment, MathFragment, MathFragmentKind, PositioningFragment, SpecificLayoutInfo, Tag, TextFragment,
 };
 use crate::geom::{
     LengthPercentageOrAuto, PhysicalPoint, PhysicalRect, PhysicalSides, PhysicalSize,
@@ -879,6 +880,45 @@ impl PaintTraversalHandler for DisplayListBuilder<'_> {
         };
 
         BuilderForBoxFragment::new(fragment, state.origin).build(self, state)
+    }
+
+    fn visit_math(&mut self, state: &TraversalState, fragment: &Arc<MathFragment>) {
+        eprintln!("bar");
+        fragment.box_fragment.base.visit_fragment(self);
+    
+        let style = fragment.box_fragment.style();
+        if style.get_inherited_box().visibility != Visibility::Visible {
+            return;
+        }
+    
+        // Absolute origin of this MathFragment = parent traversal origin + box fragment offset
+        let fragment_origin = state.origin + fragment.box_fragment.base.rect().origin.to_vector();
+    
+        // Draw MathML-specific geometric primitives (e.g. fraction line)
+        match &fragment.kind {
+            MathFragmentKind::Fraction { bar_rect: Some(bar_rect) } => {
+                let absolute_rect = bar_rect.translate(fragment_origin.to_vector());
+                let common = self.common_properties(state, absolute_rect.to_webrender(), &style);
+                let color = style.clone_color();
+                self.wr().push_rect(
+                    &common,
+                    absolute_rect.to_webrender(),
+                    rgba(color),
+                );
+            },
+            MathFragmentKind::Radical { rule_rect: Some(rule_rect) } => {
+                let absolute_rect = rule_rect.translate(fragment_origin.to_vector());
+                let common = self.common_properties(state, absolute_rect.to_webrender(), &style);
+                let color = style.clone_color();
+    
+                self.wr().push_rect(
+                    &common,
+                    absolute_rect.to_webrender(),
+                    rgba(color),
+                );
+            },
+            _ => {},
+        }
     }
 
     fn visit_iframe(&mut self, state: &TraversalState, fragment: &Arc<IFrameFragment>) {

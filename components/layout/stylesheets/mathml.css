@@ -1,0 +1,167 @@
+/* This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
+
+@namespace url(http://www.w3.org/1998/Math/MathML);
+
+/**************************************************************************/
+/* 1. 全局 MathML 默认规则 (Universal Rules)                               */
+/**************************************************************************/
+
+* {
+  font-size: math;
+  writing-mode: horizontal-tb !important;
+}
+
+/**************************************************************************/
+/* 2. 第一梯队：根节点与基础布局容器 (math, mrow, mstyle, mphantom)         */
+/**************************************************************************/
+
+/* <math> - MathML 根节点 */
+math {
+  direction: ltr;
+  text-indent: 0;
+  letter-spacing: normal;
+  line-height: normal;
+  word-spacing: normal;
+  font-family: math, serif;
+  font-size: inherit;
+  font-style: normal;
+  font-weight: normal;
+  display: inline math;
+  math-shift: normal;
+  math-style: compact;
+  math-depth: 0;
+  text-rendering: optimizeLegibility;
+}
+
+/* display 属性的 HTML 映射支持 */
+math[display="block" i] {
+  display: block math;
+  math-style: normal;
+}
+
+math[display="inline" i] {
+  display: inline math;
+  math-style: compact;
+}
+
+/* <mrow> - 水平分组容器 (类似于 math 中的 <div>/<span>) */
+/* <mstyle> - 样式覆盖容器 */
+mrow,
+mstyle {
+  display: inline;
+}
+
+/* <mphantom> - 隐形占位容器（保留宽高与基线，但不渲染内容） */
+mphantom {
+  visibility: hidden;
+}
+
+/**************************************************************************/
+/* 3. Token 文本节点 (mi, mn, mo, mtext, ms) 与 自动斜体                    */
+/**************************************************************************/
+
+mi {
+  /* 遵循 MathML Core 规范，单字母 mi 自动转为斜体 (math-auto) */
+  text-transform: math-auto;
+}
+
+/**************************************************************************/
+/* 4. 其它结构与上下标的 Math 深度/排版规则 (MathML Core Standard)          */
+/**************************************************************************/
+
+/* 分式 (mfrac) */
+mfrac {
+  padding-inline: 1px;
+}
+
+mfrac>* {
+  math-depth: auto-add;
+  math-style: compact;
+}
+
+mfrac> :nth-child(2) {
+  math-shift: compact;
+}
+
+/* 根号 (msqrt, mroot) */
+mroot> :not(:first-child) {
+  math-depth: add(2);
+  math-style: compact;
+}
+
+mroot,
+msqrt {
+  math-shift: compact;
+}
+
+/* 上下标 (msub, msup, msubsup, mmultiscripts) */
+msub> :not(:first-child),
+msup> :not(:first-child),
+msubsup> :not(:first-child),
+mmultiscripts> :not(:first-child) {
+  math-depth: add(1);
+  math-style: compact;
+}
+
+msub> :nth-child(2),
+msubsup> :nth-child(2),
+mmultiscripts> :nth-child(even),
+mmultiscripts>mprescripts~ :nth-child(odd),
+mover[accent="true" i]> :first-child,
+munderover[accent="true" i]> :first-child {
+  math-shift: compact;
+}
+
+mmultiscripts>mprescripts~ :nth-child(even) {
+  math-shift: inherit;
+}
+
+/* 上下附 (munder, mover, munderover) */
+munder> :not(:first-child),
+mover> :not(:first-child),
+munderover> :not(:first-child) {
+  math-style: compact;
+}
+
+/* 矩阵与表格 (mtable, mtr, mtd) */
+mtable {
+  display: inline-table;
+  math-style: compact;
+  border-collapse: separate;
+  border-spacing: 0;
+  text-indent: 0;
+}
+
+mtr {
+  display: table-row;
+  vertical-align: baseline;
+}
+
+mtd {
+  display: table-cell;
+  vertical-align: inherit;
+  white-space: nowrap;
+  padding: 0.5ex 0.4em;
+}
+
+/* 语义与错误包裹 */
+merror {
+  border: 1px solid red;
+  background-color: lightyellow;
+}
+
+merror * {
+  color: inherit;
+}
+
+maction> :not(:first-child),
+semantics> :not(:first-child) {
+  display: none;
+}
+
+/* 链接无下划线 */
+:any-link {
+  text-decoration: none !important;
+}
