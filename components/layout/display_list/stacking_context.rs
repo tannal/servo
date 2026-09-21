@@ -607,6 +607,23 @@ impl Fragment {
                     parent_info,
                 );
             },
+            Fragment::Math(math_fragment) => {
+                let box_fragment = &math_fragment.box_fragment;
+                if mode == StackingContextBuildMode::SkipHoisted &&
+                    box_fragment.style().clone_position().is_absolutely_positioned()
+                {
+                    return;
+                }
+            
+                box_fragment.build_stacking_context_tree(
+                    Fragment::Box(box_fragment.clone()),
+                    stacking_context_tree,
+                    containing_block,
+                    containing_block_info,
+                    stacking_context,
+                    text_decorations,
+                );
+            },
             Fragment::LayoutRoot(..) => {
                 // These fragments are processed at their originating
                 // `Fragment::AbsoluteOrFixedPositionedPlaceholder` position.

@@ -2277,7 +2277,7 @@ impl InlineFormattingContext {
             .to_used_value(containing_block.size.inline.unwrap_or_default())
     }
 
-    pub(super) fn layout(
+    pub(crate) fn layout(
         &self,
         layout_context: &LayoutContext,
         positioning_context: &mut PositioningContext,

@@ -134,6 +134,7 @@ pub(crate) enum DisplayInside {
     Flex,
     Grid,
     Table,
+    Math,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -1384,6 +1385,10 @@ impl From<stylo::Display> for Display {
             },
             stylo::DisplayInside::FlowRoot => DisplayInside::FlowRoot {
                 is_list_item: packed.is_list_item(),
+            },
+
+            stylo::DisplayInside::Math => DisplayInside::Math {
+
             },
             stylo::DisplayInside::Flex => DisplayInside::Flex,
             stylo::DisplayInside::Grid => DisplayInside::Grid,

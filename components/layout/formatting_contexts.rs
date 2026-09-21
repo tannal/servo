@@ -4,7 +4,7 @@
 
 use app_units::Au;
 use atomic_refcell::AtomicRefCell;
-use layout_api::LayoutNode;
+use layout_api::{LayoutElement, LayoutNode};
 use malloc_size_of_derive::MallocSizeOf;
 use script::layout_dom::{ServoDangerousStyleElement, ServoLayoutNode};
 use servo_arc::Arc;
@@ -21,6 +21,7 @@ use crate::flow::BlockFormattingContext;
 use crate::flow::inline::InlineFormattingContext;
 use crate::fragment_tree::{BaseFragmentInfo, FragmentFlags};
 use crate::layout_box_base::{IndependentFormattingContextLayoutResult, LayoutBoxBase};
+use crate::mathml::{MathContainer, MathRowBlock};
 use crate::positioned::{LayoutRootLayoutInputs, PositioningContext};
 use crate::replaced::ReplacedContents;
 use crate::sizing::{
@@ -62,6 +63,7 @@ pub(crate) enum IndependentFormattingContextContents {
     Grid(TaffyContainer),
     Table(Table),
     // Other layout modes go here
+    Math(MathContainer),
 }
 
 impl IndependentFormattingContextContents {
@@ -80,6 +82,7 @@ impl IndependentFormattingContextContents {
                 taffy_container.subtree_size()
             },
             IndependentFormattingContextContents::Table(table) => table.subtree_size(),
+            IndependentFormattingContextContents::Math(math) => math.subtree_size(),
         }
     }
 }
@@ -252,6 +255,14 @@ impl IndependentFormattingContext {
                     propagated_data,
                 ))
             },
+            DisplayInside::Math => {
+                IndependentFormattingContextContents::Math(MathContainer::construct(
+                    context,
+                    node_and_style_info,
+                    non_replaced_contents,
+                    propagated_data,
+                ))
+            },
         }
     }
 
@@ -406,6 +417,9 @@ impl IndependentFormattingContext {
             IndependentFormattingContextContents::Table(table) => {
                 table.repair_style(context, new_style, &self.base)
             },
+            IndependentFormattingContextContents::Math(math) => {
+                math.repair_style(context, node, new_style);
+            },
         }
     }
 
@@ -509,6 +523,11 @@ impl IndependentFormattingContext {
                 positioning_context,
                 containing_block_for_children,
                 containing_block,
+            ),
+            IndependentFormattingContextContents::Math(math) => math.layout(
+                layout_context,
+                positioning_context,
+                containing_block_for_children,
             ),
         }
     }
@@ -618,6 +637,7 @@ impl IndependentFormattingContext {
             IndependentFormattingContextContents::Flex(fc) => fc.layout_style(),
             IndependentFormattingContextContents::Grid(fc) => fc.layout_style(),
             IndependentFormattingContextContents::Table(fc) => fc.layout_style(None),
+            IndependentFormattingContextContents::Math(fc) => fc.layout_style(),
         }
     }
 
@@ -652,6 +672,9 @@ impl IndependentFormattingContext {
                 contents.attached_to_tree(layout_box)
             },
             IndependentFormattingContextContents::Table(contents) => {
+                contents.attached_to_tree(layout_box)
+            },
+            IndependentFormattingContextContents::Math(contents) => {
                 contents.attached_to_tree(layout_box)
             },
         }
@@ -702,6 +725,9 @@ impl ComputeInlineContentSizes for IndependentFormattingContextContents {
                 inner.compute_inline_content_sizes(layout_context, constraint_space)
             },
             Self::Table(inner) => {
+                inner.compute_inline_content_sizes(layout_context, constraint_space)
+            },
+            Self::Math(inner) => {
                 inner.compute_inline_content_sizes(layout_context, constraint_space)
             },
         }

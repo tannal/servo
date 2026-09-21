@@ -27,7 +27,7 @@ use webrender_api::units::{LayoutPoint, LayoutRect, LayoutSize, RectExt};
 use crate::display_list::clip::{Clip, ClipId};
 use crate::display_list::paint_traversal::{PaintTraversal, PaintTraversalHandler};
 use crate::display_list::{StackingContext, StackingContextTree, ToWebRender, TraversalState};
-use crate::fragment_tree::{BoxFragmentWithStyle, Fragment, FragmentFlags, TextFragment};
+use crate::fragment_tree::{BoxFragmentWithStyle, Fragment, FragmentFlags, MathFragmentKind, TextFragment};
 use crate::geom::PhysicalRect;
 
 struct DomPositionCandidate {
@@ -217,6 +217,15 @@ impl PaintTraversalHandler for HitTest<'_> {
     ) {
         Fragment::Text(fragment.clone()).hit_test(state, self);
     }
+    
+    fn visit_math(
+        &mut self,
+        state: &TraversalState,
+        fragment: &Arc<crate::fragment_tree::MathFragment>,
+    ) {
+        Fragment::Box(fragment.box_fragment.clone()).hit_test(state, self);
+        Fragment::Math(fragment.clone()).hit_test(state, self);
+    }
 }
 
 impl Clip {
@@ -335,6 +344,16 @@ impl Fragment {
                 box_fragment.base.flags,
                 Cursor::Default,
             ),
+            Fragment::Math(math_fragment) => {
+                let box_fragment = &math_fragment.box_fragment;
+                hit_test_fragment_inner(
+                    &box_fragment.style(),
+                    box_fragment.border_rect(),
+                    box_fragment.border_radius(),
+                    box_fragment.base.flags,
+                    Cursor::Default,
+                )
+            },
             Fragment::Text(text) => hit_test_fragment_inner(
                 &text.style(),
                 text.base.rect(),
