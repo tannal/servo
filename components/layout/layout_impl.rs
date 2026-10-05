@@ -116,6 +116,9 @@ static USER_AGENT_CSS: &[u8] = include_bytes!("./stylesheets/user-agent.css");
 /// A CSS file to style the user agent stylesheet in HTML documents.
 static HTML_MODE_CSS: &[u8] = include_bytes!("./stylesheets/html-mode.css");
 
+/// A CSS file to style the user agent stylesheet in MathML documents.
+static MATHML_CSS: &[u8] = include_bytes!("./stylesheets/mathml.css");
+
 /// A CSS file to style the Servo browser.
 static SERVO_CSS: &[u8] = include_bytes!("./stylesheets/servo.css");
 
@@ -1859,6 +1862,7 @@ fn get_ua_stylesheets(shared_lock: &SharedRwLock) -> Rc<UserAgentStylesheets> {
                         "presentational-hints.css",
                         PRESENTATIONAL_HINTS_CSS,
                     ),
+                    parse_ua_stylesheet(shared_lock, "mathml.css", MATHML_CSS),
                 ];
 
                 let html_mode_stylesheet =

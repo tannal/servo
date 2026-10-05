@@ -34,6 +34,8 @@ mod sizing;
 mod style_ext;
 pub mod table;
 mod traversal;
+pub(crate) mod wasm_container;
+pub(crate) mod wasm_layout;
 
 use app_units::Au;
 pub use cell::ArcRefCell;

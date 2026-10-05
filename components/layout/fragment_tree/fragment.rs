@@ -19,6 +19,7 @@ use servo_base::print_tree::PrintTree;
 use servo_base::text::Utf32CodeUnits;
 use servo_url::ServoUrl;
 use style::Zero;
+use style::color::AbsoluteColor;
 use style::properties::ComputedValues;
 use style_traits::CSSPixel;
 use webrender_api::{FontInstanceKey, ImageKey};
@@ -51,6 +52,8 @@ pub(crate) enum Fragment {
     Text(#[conditional_malloc_size_of] Arc<TextFragment>),
     Image(#[conditional_malloc_size_of] Arc<ImageFragment>),
     IFrame(#[conditional_malloc_size_of] Arc<IFrameFragment>),
+
+    Math(#[conditional_malloc_size_of] Arc<MathFragment>),
 }
 
 #[derive(Clone, MallocSizeOf)]
@@ -86,6 +89,30 @@ impl LayoutRootFragment {
             Fragment::Box(box_fragment) => box_fragment,
             _ => unreachable!("Layout root should always contain box fragment"),
         })
+    }
+}
+
+#[derive(Clone, Debug, MallocSizeOf)]
+pub(crate) enum MathFragmentKind {
+    Fraction { bar_rect: Option<PhysicalRect<Au>> },
+    Radical { rule_rect: Option<PhysicalRect<Au>> },
+    Row,
+}
+
+#[derive(MallocSizeOf)]
+pub(crate) struct MathFragment {
+    #[conditional_malloc_size_of]
+    /// The underlying box fragment handling standard box metrics, children, and style
+    pub box_fragment: Arc<BoxFragment>,
+    /// MathML-specific layout and painting metadata
+    pub kind: MathFragmentKind,
+}
+
+impl MathFragment {
+    pub fn print(&self, tree: &mut PrintTree) {
+        tree.new_level(format!("MathFragment kind={:?}", self.kind));
+        self.box_fragment.print(tree);
+        tree.end_level();
     }
 }
 
@@ -151,6 +178,7 @@ impl Fragment {
             Fragment::Image(fragment) => RefOrAtomicRef::Ref(&fragment.base),
             Fragment::IFrame(fragment) => RefOrAtomicRef::Ref(&fragment.base),
             Fragment::Float(fragment) => RefOrAtomicRef::Ref(&fragment.base),
+            Fragment::Math(fragment) => RefOrAtomicRef::Ref(&fragment.box_fragment.base),
         })
     }
 
@@ -165,10 +193,13 @@ impl Fragment {
             Fragment::Positioning(positioning_fragment) => {
                 positioning_fragment.set_cumulative_content_rect(content_rect)
             },
-            Fragment::AbsoluteOrFixedPositionedPlaceholder(..) |
-            Fragment::Text(..) |
-            Fragment::Image(..) |
-            Fragment::IFrame(..) => {},
+            Fragment::AbsoluteOrFixedPositionedPlaceholder(..)
+            | Fragment::Text(..)
+            | Fragment::Image(..)
+            | Fragment::IFrame(..) => {},
+            Fragment::Math(fragment) => {
+                fragment.box_fragment.set_containing_block(containing_block)
+            },
         }
     }
 
@@ -192,6 +223,7 @@ impl Fragment {
             Fragment::Text(fragment) => fragment.print(tree),
             Fragment::Image(fragment) => fragment.print(tree),
             Fragment::IFrame(fragment) => fragment.print(tree),
+            Fragment::Math(fragment) => fragment.print(tree),
         }
     }
 
@@ -236,6 +268,10 @@ impl Fragment {
             Fragment::AbsoluteOrFixedPositionedPlaceholder(_) |
             Fragment::Image(..) |
             Fragment::IFrame(..) => self.base().map(|base| base.rect()).unwrap_or_default(),
+            Fragment::Math(fragment) => fragment
+                .box_fragment
+                .with_style()
+                .scrollable_overflow_for_parent(),
         }
     }
 
@@ -272,6 +308,18 @@ impl Fragment {
             Fragment::Text(..) | Fragment::Image(..) | Fragment::IFrame(..) => {
                 Some(self.base()?.rect())
             },
+            Fragment::Math(fragment) => {
+                if !fragment
+                    .box_fragment
+                    .style()
+                    .clone_position()
+                    .is_absolutely_positioned()
+                {
+                    Some(fragment.box_fragment.margin_rect())
+                } else {
+                    None
+                }
+            },
         }
     }
 
@@ -303,6 +351,17 @@ impl Fragment {
             Fragment::AbsoluteOrFixedPositionedPlaceholder(_) |
             Fragment::Image(_) |
             Fragment::IFrame(_) => None,
+            Fragment::Math(fragment) => Some(match area {
+                BoxAreaType::Content => fragment
+                    .box_fragment
+                    .cumulative_content_box_rect(containing_block_computation),
+                BoxAreaType::Padding => fragment
+                    .box_fragment
+                    .cumulative_padding_box_rect(containing_block_computation),
+                BoxAreaType::Border => fragment
+                    .box_fragment
+                    .cumulative_border_box_rect(containing_block_computation),
+            }),
         }
     }
 
@@ -350,6 +409,7 @@ impl Fragment {
                 Some(RefOrAtomicRef::Ref(&fragment.children))
             },
             Fragment::Positioning(fragment) => Some(RefOrAtomicRef::Ref(&fragment.children)),
+            Fragment::Math(fragment) => Some(RefOrAtomicRef::Ref(&fragment.box_fragment.children)),
             _ => None,
         }
     }
@@ -409,6 +469,7 @@ impl Fragment {
             Fragment::Image(fragment) => &fragment.style,
             Fragment::IFrame(fragment) => &fragment.style,
             Fragment::Float(fragment) => &fragment.style,
+            Fragment::Math(fragment) => &fragment.box_fragment.style,
         };
         *shared_style.borrow_mut() = new_style.clone();
     }
@@ -421,6 +482,7 @@ impl Fragment {
             Fragment::Box(box_fragment) | Fragment::Float(box_fragment) => {
                 Some(RefOrAtomicRef::Ref(box_fragment))
             },
+            Fragment::Math(fragment) => Some(RefOrAtomicRef::Ref(&fragment.box_fragment)),
             _ => None,
         }
     }

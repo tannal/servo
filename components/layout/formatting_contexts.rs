@@ -30,6 +30,7 @@ use crate::sizing::{
 use crate::style_ext::{AspectRatio, Display, DisplayInside, LayoutStyle};
 use crate::table::Table;
 use crate::taffy::TaffyContainer;
+use crate::wasm_container::WasmContainer;
 use crate::{
     ArcRefCell, ConstraintSpace, ContainingBlock, ContainingBlockSize, IndefiniteContainingBlock,
     LogicalVec2, PropagatedBoxTreeData,
@@ -61,7 +62,8 @@ pub(crate) enum IndependentFormattingContextContents {
     Flex(FlexContainer),
     Grid(TaffyContainer),
     Table(Table),
-    // Other layout modes go here
+    // Houdini & Wasm Custom Layouts (MathML, Worklets)
+    Wasm(WasmContainer),
 }
 
 impl IndependentFormattingContextContents {
@@ -80,6 +82,7 @@ impl IndependentFormattingContextContents {
                 taffy_container.subtree_size()
             },
             IndependentFormattingContextContents::Table(table) => table.subtree_size(),
+            IndependentFormattingContextContents::Wasm(wasm) => wasm.base.subtree_size(),
         }
     }
 }
@@ -191,9 +194,9 @@ impl IndependentFormattingContext {
 
                 // Some replaced elements can have inner widgets, e.g. `<video controls>`.
                 let node = node_and_style_info.node;
-                let should_make_widget = node.pseudo_element_chain().is_empty() &&
-                    node.is_root_of_user_agent_widget() &&
-                    !contents.is_content_replacement;
+                let should_make_widget = node.pseudo_element_chain().is_empty()
+                    && node.is_root_of_user_agent_widget()
+                    && !contents.is_content_replacement;
                 let widget = should_make_widget.then(|| {
                     Self::construct_for_widget(context, node_and_style_info, propagated_data)
                 });
@@ -252,6 +255,14 @@ impl IndependentFormattingContext {
                     propagated_data,
                 ))
             },
+            DisplayInside::Math => {
+                IndependentFormattingContextContents::Wasm(WasmContainer::construct(
+                    context,
+                    node_and_style_info,
+                    non_replaced_contents,
+                    propagated_data,
+                ))
+            },
         }
     }
 
@@ -299,16 +310,6 @@ impl IndependentFormattingContext {
             .inline_content_sizes(layout_context, constraint_space, &self.contents)
     }
 
-    /// Computes the tentative intrinsic block sizes that may be needed while computing
-    /// the intrinsic inline sizes. Therefore, this ignores the values of the sizing
-    /// properties in both axes.
-    /// A return value of `None` indicates that there is no suitable tentative intrinsic
-    /// block size, so intrinsic keywords in the block sizing properties will be ignored,
-    /// possibly resulting in an indefinite [`SizeConstraint`] for computing the intrinsic
-    /// inline sizes and laying out the contents.
-    /// A return value of `Some` indicates that intrinsic keywords in the block sizing
-    /// properties will be resolved as the contained value, guaranteeing a definite amount
-    /// for computing the intrinsic inline sizes and laying out the contents.
     pub(crate) fn tentative_block_content_size(
         &self,
         preferred_aspect_ratio: Option<AspectRatio>,
@@ -321,19 +322,13 @@ impl IndependentFormattingContext {
         Some(result?.0)
     }
 
-    /// Same as [`Self::tentative_block_content_size()`], but if there is a tentative intrinsic
-    /// block size, it also includes a bool which will be true if the former depends on
-    /// the provided `inline_stretch_size`.
     pub(crate) fn tentative_block_content_size_with_dependency(
         &self,
         preferred_aspect_ratio: Option<AspectRatio>,
         inline_stretch_size: Option<Au>,
     ) -> Option<(ContentSizes, bool)> {
-        // See <https://github.com/w3c/csswg-drafts/issues/12333> regarding the difference
-        // in behavior for the replaced and non-replaced cases.
         match &self.contents {
             IndependentFormattingContextContents::Replaced(contents, _) => {
-                // For replaced elements with no ratio, the returned value doesn't matter.
                 let ratio = preferred_aspect_ratio?;
                 let writing_mode = self.style().writing_mode;
                 let natural_sizes = contents.logical_natural_sizes(writing_mode);
@@ -405,6 +400,9 @@ impl IndependentFormattingContext {
             },
             IndependentFormattingContextContents::Table(table) => {
                 table.repair_style(context, new_style, &self.base)
+            },
+            IndependentFormattingContextContents::Wasm(wasm) => {
+                wasm.repair_style(context, node, new_style);
             },
         }
     }
@@ -509,6 +507,11 @@ impl IndependentFormattingContext {
                 positioning_context,
                 containing_block_for_children,
                 containing_block,
+            ),
+            IndependentFormattingContextContents::Wasm(wasm) => wasm.layout(
+                layout_context,
+                positioning_context,
+                containing_block_for_children,
             ),
         }
     }
@@ -618,6 +621,7 @@ impl IndependentFormattingContext {
             IndependentFormattingContextContents::Flex(fc) => fc.layout_style(),
             IndependentFormattingContextContents::Grid(fc) => fc.layout_style(),
             IndependentFormattingContextContents::Table(fc) => fc.layout_style(None),
+            IndependentFormattingContextContents::Wasm(fc) => fc.layout_style(),
         }
     }
 
@@ -630,7 +634,6 @@ impl IndependentFormattingContext {
             IndependentFormattingContextContents::Replaced(replaced, _) => {
                 replaced.preferred_aspect_ratio(self.style(), padding_border_sums)
             },
-            // TODO: support preferred aspect ratios on non-replaced boxes.
             _ => None,
         }
     }
@@ -654,6 +657,9 @@ impl IndependentFormattingContext {
             IndependentFormattingContextContents::Table(contents) => {
                 contents.attached_to_tree(layout_box)
             },
+            IndependentFormattingContextContents::Wasm(contents) => {
+                contents.attached_to_tree(layout_box)
+            },
         }
     }
 
@@ -661,8 +667,6 @@ impl IndependentFormattingContext {
         self.base.subtree_size()
     }
 
-    /// Set whether this [`IndependentFormattingContext`] is selected. Returns `true` if
-    /// anything changed.
     pub(crate) fn set_selection(&self, selected: bool) -> bool {
         match &self.contents {
             IndependentFormattingContextContents::Replaced(replaced_contents, ..) => {
@@ -702,6 +706,9 @@ impl ComputeInlineContentSizes for IndependentFormattingContextContents {
                 inner.compute_inline_content_sizes(layout_context, constraint_space)
             },
             Self::Table(inner) => {
+                inner.compute_inline_content_sizes(layout_context, constraint_space)
+            },
+            Self::Wasm(inner) => {
                 inner.compute_inline_content_sizes(layout_context, constraint_space)
             },
         }

@@ -1,0 +1,51 @@
+package servo:layout@0.1.0;
+
+interface engine {
+    record box-metrics {
+        width: u32,
+        height: u32,
+        ascent: u32,
+        descent: u32,
+    }
+
+    record font-metrics {
+        font-size: u32,
+        math-axis-height: u32,
+        default-line-thickness: u32,
+    }
+
+    record child-offset {
+        x: s32,
+        y: s32,
+    }
+
+    record draw-rect {
+        x: s32,
+        y: s32,
+        width: u32,
+        height: u32,
+    }
+
+    record layout-input {
+        element-tag: string,
+        children: list<box-metrics>,
+        font: font-metrics,
+        custom-thickness: option<u32>,
+    }
+
+    record layout-output {
+        width: u32,
+        height: u32,
+        ascent: u32,
+        descent: u32,
+        children-offsets: list<child-offset>,
+        /// Drawing primitives produced by layout (e.g. fraction bar, radical line)
+        extra-rects: list<draw-rect>,
+    }
+
+    layout-element: func(input: layout-input) -> layout-output;
+}
+
+world layout-worklet {
+    export engine;
+}

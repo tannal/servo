@@ -39,6 +39,7 @@ use crate::style_ext::{
 };
 use crate::table::{TableLevelBox, WeakTableLevelBox};
 use crate::taffy::{TaffyItemBox, TaffyItemBoxInner};
+use crate::wasm_container::WasmChildBox;
 
 #[derive(MallocSizeOf)]
 pub struct PseudoLayoutData {
@@ -133,6 +134,7 @@ pub(super) enum LayoutBox {
     FlexLevel(ArcRefCell<FlexLevelBox>),
     TableLevelBox(TableLevelBox),
     TaffyItemBox(ArcRefCell<TaffyItemBox>),
+    WasmLevel(ArcRefCell<WasmChildBox>),
     Text(ArcRefCell<TextRun>),
     Widget(ArcRefCell<IndependentFormattingContext>),
 }
@@ -156,6 +158,7 @@ impl LayoutBox {
             LayoutBox::InlineLevel(inline_item) => inline_item.with_base(callback),
             LayoutBox::FlexLevel(flex_level_box) => flex_level_box.borrow().with_base(callback),
             LayoutBox::TaffyItemBox(taffy_item_box) => taffy_item_box.borrow().with_base(callback),
+            LayoutBox::WasmLevel(wasm_box) => wasm_box.borrow().with_base(callback),
             LayoutBox::TableLevelBox(table_box) => table_box.with_base(callback),
             LayoutBox::Widget(widget_context) => callback(&widget_context.borrow().base),
         })
@@ -177,6 +180,7 @@ impl LayoutBox {
             LayoutBox::TaffyItemBox(taffy_item_box) => {
                 taffy_item_box.borrow_mut().with_base_mut(callback)
             },
+            LayoutBox::WasmLevel(wasm_box) => wasm_box.borrow_mut().with_base_mut(callback),
             LayoutBox::TableLevelBox(table_box) => table_box.with_base_mut(callback),
             LayoutBox::Widget(widget_context) => callback(&mut widget_context.borrow_mut().base),
         })
@@ -210,9 +214,10 @@ impl LayoutBox {
             LayoutBox::TaffyItemBox(taffy_item_box) => taffy_item_box
                 .borrow_mut()
                 .repair_style(context, node, new_style),
-            LayoutBox::Text(..) => {
-                // There is nothing to update in this case.
+            LayoutBox::WasmLevel(wasm_box) => {
+                wasm_box.borrow_mut().repair_style(context, node, new_style);
             },
+            LayoutBox::Text(..) => {},
             LayoutBox::Widget(widget_context) => widget_context
                 .borrow_mut()
                 .repair_style(context, node, new_style),
@@ -221,10 +226,7 @@ impl LayoutBox {
 
     fn attached_to_tree(&self, layout_box: WeakLayoutBox) {
         match self {
-            Self::DisplayContents(_) => {
-                // This box can't have children, its contents get reparented to its parent.
-                // Therefore, no need to do anything.
-            },
+            Self::DisplayContents(_) => {},
             Self::BlockLevel(block_level_box) => {
                 block_level_box.borrow().attached_to_tree(layout_box)
             },
@@ -234,9 +236,8 @@ impl LayoutBox {
             Self::TaffyItemBox(taffy_item_box) => {
                 taffy_item_box.borrow().attached_to_tree(layout_box)
             },
-            Self::Text(..) => {
-                // This kind of box cannot have children, so no need to do anything.
-            },
+            Self::WasmLevel(wasm_box) => wasm_box.borrow().attached_to_tree(layout_box),
+            Self::Text(..) => {},
             LayoutBox::Widget(widget_context) => {
                 widget_context.borrow().attached_to_tree(layout_box)
             },
@@ -259,6 +260,7 @@ impl LayoutBox {
             Self::TaffyItemBox(taffy_item_box) => {
                 WeakLayoutBox::TaffyItemBox(taffy_item_box.downgrade())
             },
+            Self::WasmLevel(wasm_box) => WeakLayoutBox::WasmLevel(wasm_box.downgrade()),
             Self::Text(text_run) => WeakLayoutBox::Text(text_run.downgrade()),
             Self::Widget(widget_context) => WeakLayoutBox::Widget(widget_context.downgrade()),
         }
@@ -358,6 +360,7 @@ pub(super) enum WeakLayoutBox {
     FlexLevel(WeakRefCell<FlexLevelBox>),
     TableLevelBox(WeakTableLevelBox),
     TaffyItemBox(WeakRefCell<TaffyItemBox>),
+    WasmLevel(WeakRefCell<WasmChildBox>),
     Text(WeakRefCell<TextRun>),
     Widget(WeakRefCell<IndependentFormattingContext>),
 }
@@ -377,19 +380,16 @@ impl WeakLayoutBox {
             Self::TaffyItemBox(taffy_item_box) => {
                 LayoutBox::TaffyItemBox(taffy_item_box.upgrade()?)
             },
+            Self::WasmLevel(wasm_box) => LayoutBox::WasmLevel(wasm_box.upgrade()?),
             Self::Text(text_run) => LayoutBox::Text(text_run.upgrade()?),
             Self::Widget(widget_context) => LayoutBox::Widget(widget_context.upgrade()?),
         })
     }
 }
 
-/// A wrapper for [`InnerDOMLayoutData`]. This is necessary to give the entire data
-/// structure interior mutability, as we will need to mutate the layout data of
-/// non-mutable DOM nodes.
 #[derive(Default, MallocSizeOf)]
 pub struct DOMLayoutData(AtomicRefCell<InnerDOMLayoutData>);
 
-// The implementation of this trait allows the data to be stored in the DOM.
 impl LayoutDataTrait for DOMLayoutData {}
 impl GenericLayoutDataTrait for DOMLayoutData {
     fn as_any(&self) -> &dyn std::any::Any {
@@ -398,8 +398,6 @@ impl GenericLayoutDataTrait for DOMLayoutData {
 
     fn set_text_run_selection(&self, new_range: Option<RangeAny<Utf32CodeUnits>>) -> bool {
         let inner = self.0.borrow();
-        // When `::first-letter` is used, one DOM text node can generate multiple text runs
-        // so there isn’t a single place to set the new range
         if inner
             .pseudo_boxes
             .iter()
@@ -463,7 +461,6 @@ impl From<ArcRefCell<Option<LayoutBox>>> for BoxSlot<'_> {
     }
 }
 
-/// A mutable reference to a `LayoutBox` stored in a DOM element.
 impl BoxSlot<'_> {
     pub(crate) fn set(self, layout_box: LayoutBox) {
         layout_box.attached_to_tree(layout_box.downgrade());
@@ -474,9 +471,6 @@ impl BoxSlot<'_> {
         self.slot.borrow_mut().take()
     }
 
-    /// Call [`Self::take_layout_box`] and try to unwrap it into a [`TextRun`], returning `None` if
-    /// the slot is empty or it does not contain a [`TextRun`]. Note that this will *always* clear
-    /// the [`BoxSlot`].
     pub(crate) fn take_layout_box_as_text_run(&self) -> Option<ArcRefCell<TextRun>> {
         match self.take_layout_box()? {
             LayoutBox::Text(old_text_run) => Some(old_text_run),
@@ -511,30 +505,13 @@ pub(crate) trait NodeExt<'dom> {
     fn inner_layout_data_mut(&self) -> Option<AtomicRefMut<'dom, InnerDOMLayoutData>>;
     fn box_slot(&self) -> BoxSlot<'dom>;
 
-    /// Remove boxes for the element itself, and all of its pseudo-element boxes.
     fn unset_all_boxes(&self);
-
-    /// Clear laid out `Fragment`s and dirty `Fragment` caches for all of this node's boxes,
-    /// ensuring that the next `FragmentTree` layout that happens at this node is complete.
-    fn clear_fragments_and_dirty_fragment_caches(&self);
-
-    /// Clear laid out `Fragment`s and dirty `Fragment` caches for all this node's boxes and
-    /// descendant's boxes, ensuring that the next `FragmentTree` layout that happens at and
-    /// below this node is complete.
     fn clear_fragments_and_dirty_fragment_caches_recursively(&self);
-
-    /// Clear laid out `Fragment`s and dirty `Fragment` caches for all this node's descendant's
-    /// boxes.
+    fn clear_fragments_and_dirty_fragment_caches(&self);
     fn clear_fragments_and_dirty_fragment_caches_of_descendants(&self);
 
-    /// Returns the [`NodeRenderingType`] for this [`LayoutNode`] which describes whether
-    /// the node is being rendered, delegating rendering, or not being rendered at all
-    /// based on whether it has a [`LayoutBox`] and what kind.
     fn rendering_type(&self) -> NodeRenderingType;
-
     fn fragments_for_pseudo(&self, pseudo_element: Option<PseudoElement>) -> Vec<Fragment>;
-
-    /// Run `callback` on the fragments without cloning them. Returns `None` if the node has no box.
     fn with_fragments<T>(&self, callback: impl FnOnce(&[Fragment]) -> T) -> Option<T>;
     /// Run `callback` on the `LayoutBoxBase` of this node's box or the box of its pseudo-element.
     /// Returns `None` if there is no such box.
@@ -542,32 +519,11 @@ pub(crate) trait NodeExt<'dom> {
     fn with_layout_box_base_including_pseudos(&self, callback: impl FnMut(&LayoutBoxBase));
 
     fn repair_style(&self, context: &SharedStyleContext);
-
-    /// Whether or not this node isolates downward flowing box tree rebuild damage and
-    /// fragment tree layout cache damage. Roughly, this corresponds to independent
-    /// formatting context boundaries.
-    ///
-    /// - The node's boxes themselves will be rebuilt, but not the descendant node's
-    ///   boxes.
-    /// - The node's fragment tree layout will be rebuilt, not the descendent node's
-    ///   fragment tree layout cache.
-    ///
-    /// When this node has no box yet, `false` is returned.
     fn isolates_damage_for_damage_propagation(&self) -> bool;
-
-    /// Try to re-run box tree reconstruction from this point. This can succeed if the
-    /// node itself is still valid and isolates box tree damage from ancestors (for
-    /// instance, if it starts an independent formatting context). **Note:** This assumes
-    /// that no ancestors have box damage.
-    ///
-    /// Returns `true` if box tree reconstruction was sucessful and `false` otherwise.
     fn rebuild_box_tree_from_independent_formatting_context(
         &self,
         layout_context: &LayoutContext,
     ) -> bool;
-
-    /// Whether or not the style of this node indicates that it should be absolutely
-    /// positioned.
     fn is_absolutely_positioned(&self) -> bool;
 }
 
@@ -587,7 +543,6 @@ impl<'dom> NodeExt<'dom> for ServoLayoutNode<'dom> {
         let width = metadata.map(|metadata| metadata.width).unwrap_or_default();
         let height = metadata.map(|metadata| metadata.height).unwrap_or_default();
         let (mut width, mut height) = (width as f64, height as f64);
-        // Take `image_density` into account for calculating the size in pixels for images.
         if let Some(density) = self.image_density().filter(|density| *density != 1.) {
             width /= density;
             height /= density;
@@ -644,17 +599,14 @@ impl<'dom> NodeExt<'dom> for ServoLayoutNode<'dom> {
     }
 
     fn as_typeless_object_with_data_attribute(&self) -> Option<String> {
-        if self.type_id() !=
-            Some(ScriptLayoutNodeType::Element(
+        if self.type_id()
+            != Some(ScriptLayoutNodeType::Element(
                 LayoutElementType::HTMLObjectElement,
             ))
         {
             return None;
         }
 
-        // TODO: This is the what the legacy layout system did, but really if Servo
-        // supports any `<object>` that's an image, it should support those with URLs
-        // and `type` attributes with image mime types.
         let element = self.as_element()?;
         if element.attribute(&ns!(), &local_name!("type")).is_some() {
             return None;
@@ -710,12 +662,6 @@ impl<'dom> NodeExt<'dom> for ServoLayoutNode<'dom> {
             return primary_layout_data.borrow().self_box.clone().into();
         };
 
-        // It's *very* important that this not borrow the element's main
-        // `InnerLayoutData`. Primary pseudo-elements are processed at the same recursion
-        // level as the main data, so the `BoxSlot` is created sequentially with other
-        // primary pseudo-elements and the element itself. The secondary pseudo-element is
-        // one level deep, so could be happening in parallel with the primary
-        // pseudo-elements or main element layout.
         let primary_layout_data = self
             .inner_layout_data()
             .expect("Should already have element InnerLayoutData here.")
@@ -731,9 +677,6 @@ impl<'dom> NodeExt<'dom> for ServoLayoutNode<'dom> {
         let mut layout_data = self.ensure_inner_layout_data();
         *layout_data.self_box.borrow_mut() = None;
         layout_data.pseudo_boxes.clear();
-
-        // Stylo already takes care of removing all layout data
-        // for DOM descendants of elements with `display: none`.
     }
 
     fn clear_fragments_and_dirty_fragment_caches_recursively(&self) {
@@ -814,9 +757,6 @@ impl<'dom> NodeExt<'dom> for ServoLayoutNode<'dom> {
     }
 
     fn isolates_damage_for_damage_propagation(&self) -> bool {
-        // Do not run incremental box and fragment tree layout at the `<body>` or root element as
-        // there is some special processing that must happen for these elements and it currently
-        // only happens when doing a full box tree construction traversal.
         if self.as_element().is_some_and(|element| {
             element.is_body_element_of_html_element_root() || element.is_root()
         }) {
@@ -835,9 +775,9 @@ impl<'dom> NodeExt<'dom> for ServoLayoutNode<'dom> {
             LayoutBox::DisplayContents(..) => false,
             LayoutBox::BlockLevel(block_level) => matches!(
                 &*block_level.borrow(),
-                BlockLevelBox::Independent(..) |
-                    BlockLevelBox::OutOfFlowFloatBox(..) |
-                    BlockLevelBox::OutOfFlowAbsolutelyPositionedBox(..)
+                BlockLevelBox::Independent(..)
+                    | BlockLevelBox::OutOfFlowFloatBox(..)
+                    | BlockLevelBox::OutOfFlowAbsolutelyPositionedBox(..)
             ),
             LayoutBox::InlineLevel(inline_level) => matches!(
                 inline_level,
@@ -849,6 +789,7 @@ impl<'dom> NodeExt<'dom> for ServoLayoutNode<'dom> {
                 TableLevelBox::Cell(..) | TableLevelBox::Caption(..),
             ),
             LayoutBox::TaffyItemBox(..) => true,
+            LayoutBox::WasmLevel(..) => false,
             LayoutBox::Text(..) => unreachable!("An element should never be a text node"),
             LayoutBox::Widget(..) => unreachable!("Widgets are always pseudo-elements."),
         }
@@ -858,9 +799,6 @@ impl<'dom> NodeExt<'dom> for ServoLayoutNode<'dom> {
         &self,
         layout_context: &LayoutContext,
     ) -> bool {
-        // Do not run incremental box tree layout at the `<body>` or root element as there
-        // is some special processing that must happen for these elements and it currently
-        // only happens when doing a full box tree construction traversal.
         if self.as_element().is_some_and(|element| {
             element.is_body_element_of_html_element_root() || element.is_root()
         }) {
@@ -898,8 +836,8 @@ impl<'dom> NodeExt<'dom> for ServoLayoutNode<'dom> {
                 let mut block_level = block_level.borrow_mut();
                 match &mut *block_level {
                     BlockLevelBox::Independent(independent_formatting_context) => {
-                        if box_style.position.is_absolutely_positioned() ||
-                            box_style.float.is_floating()
+                        if box_style.position.is_absolutely_positioned()
+                            || box_style.float.is_floating()
                         {
                             return false;
                         }
@@ -1002,8 +940,8 @@ impl<'dom> NodeExt<'dom> for ServoLayoutNode<'dom> {
             },
             LayoutBox::TableLevelBox(table_level_box) => match table_level_box {
                 TableLevelBox::Caption(caption) => {
-                    if display !=
-                        DisplayGeneratingBox::LayoutInternal(DisplayLayoutInternal::TableCaption)
+                    if display
+                        != DisplayGeneratingBox::LayoutInternal(DisplayLayoutInternal::TableCaption)
                     {
                         return false;
                     }
@@ -1011,8 +949,8 @@ impl<'dom> NodeExt<'dom> for ServoLayoutNode<'dom> {
                     true
                 },
                 TableLevelBox::Cell(table_cell) => {
-                    if display !=
-                        DisplayGeneratingBox::LayoutInternal(DisplayLayoutInternal::TableCell)
+                    if display
+                        != DisplayGeneratingBox::LayoutInternal(DisplayLayoutInternal::TableCell)
                     {
                         return false;
                     }
@@ -1025,6 +963,7 @@ impl<'dom> NodeExt<'dom> for ServoLayoutNode<'dom> {
                 _ => false,
             },
             LayoutBox::TaffyItemBox(..) => false,
+            LayoutBox::WasmLevel(..) => false,
             LayoutBox::Text(..) => unreachable!("An element should never be a text node"),
             LayoutBox::Widget(..) => unreachable!("Widgets are always pseudo-elements."),
         }
