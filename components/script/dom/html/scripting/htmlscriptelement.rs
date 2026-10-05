@@ -267,6 +267,8 @@ pub(crate) enum ScriptType {
     Classic,
     Module,
     ImportMap,
+
+    WasmComponent,
 }
 
 #[derive(JSTraceable, MallocSizeOf)]
@@ -281,6 +283,8 @@ pub(crate) enum Script {
     Classic(RootedTraceableBox<ClassicScript>),
     Module(RootedTraceableBox<Rc<ModuleTree>>),
     ImportMap(Fallible<ImportMap>),
+
+    WasmComponent(Vec<u8>),
 }
 
 pub(crate) type TracedScriptResult = Result<TracedScript, ()>;
@@ -397,6 +401,17 @@ impl FetchResponseListener for ClassicContext {
         network_listener::submit_timing(cx, global, &self, &response, &timing);
 
         let elem = self.elem.root();
+
+        if elem.get_script_type() == Some(ScriptType::WasmComponent) {
+            let wasm_bytes = self.data.to_vec();
+            println!(
+                "[Servo Wasm Debug]: Downloaded Wasm bytes = {}",
+                wasm_bytes.len()
+            );
+            *elem.result.borrow_mut() = Some(Box::new(Ok(Script::WasmComponent(wasm_bytes))));
+            elem.finish_fetching_a_script(cx, self.kind);
+            return;
+        }
 
         match (response.as_ref(), self.status.as_ref()) {
             (Err(error), _) | (_, Err(error)) => {
@@ -880,6 +895,18 @@ impl HTMLScriptElement {
                         encoding,
                     );
                 },
+                ScriptType::WasmComponent => {
+                    let script = DomRoot::from_ref(self);
+                    // Reuse Servo's fetch pipeline to fetch the raw bytes asynchronously
+                    fetch_a_classic_script(
+                        self,
+                        kind,
+                        url,
+                        cors_setting,
+                        script_fetch_options,
+                        encoding,
+                    );
+                },
                 ScriptType::Module => {
                     // If el does not have an integrity attribute, then set options's integrity metadata to
                     // the result of resolving a module integrity metadata with url and settings object.
@@ -999,6 +1026,12 @@ impl HTMLScriptElement {
                     self.execute(cx, Ok(script));
                     return;
                 },
+                ScriptType::WasmComponent => {
+                    warn!(
+                        "Inline wasm-component scripts are not supported yet, use the 'src' attribute"
+                    );
+                    return;
+                },
             }
         }
 
@@ -1089,6 +1122,12 @@ impl HTMLScriptElement {
                 // Step 6."importmap".1. Register an import map given el's relevant global object and el's result.
                 register_import_map(cx, &self.owner_global(), import_map);
             },
+            Script::WasmComponent(bytes) => {
+                // Pass `cx` as the first argument
+                if let Err(e) = crate::wasm_host::run_wasm_component(cx, &bytes, self.global()) {
+                    eprintln!("[Servo Wasm Error]: {:?}", e);
+                }
+            },
         }
 
         // Step 7.
@@ -1154,6 +1193,20 @@ impl HTMLScriptElement {
                 // match for the string "importmap", then set el's type to "importmap".
                 if ty.eq_ignore_ascii_case("importmap") {
                     return Some(ScriptType::ImportMap);
+                }
+
+                if ty
+                    .trim_matches(HTML_SPACE_CHARACTERS)
+                    .eq_ignore_ascii_case("importmap")
+                {
+                    return Some(ScriptType::ImportMap);
+                }
+
+                if ty
+                    .trim_matches(HTML_SPACE_CHARACTERS)
+                    .eq_ignore_ascii_case("wasm-component")
+                {
+                    return Some(ScriptType::WasmComponent);
                 }
 
                 let type_attr_value = ty.as_attr_ref().value();
