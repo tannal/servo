@@ -1,0 +1,32 @@
+package servo:dom@0.1.0;
+
+interface canvas2d {
+    use document.{element};
+
+    resource context2d {
+        // State & Styling
+        set-stroke-style: func(style: string);
+        set-fill-style: func(style: string);
+        set-line-width: func(width: f64);
+        set-line-dash: func(segments: list<f64>);
+        set-line-cap: func(cap: string);
+
+        // Path Commands (Direct 1:1 match with Kurbo PathEl)
+        begin-path: func();
+        close-path: func();
+        move-to: func(x: f64, y: f64);
+        line-to: func(x: f64, y: f64);
+        quadratic-curve-to: func(cpx: f64, cpy: f64, x: f64, y: f64);
+        bezier-curve-to: func(cp1x: f64, cp1y: f64, cp2x: f64, cp2y: f64, x: f64, y: f64);
+        arc: func(x: f64, y: f64, radius: f64, start-angle: f64, end-angle: f64, anticlockwise: bool);
+        rect: func(x: f64, y: f64, w: f64, h: f64);
+
+        // Surface Operations
+        clear-rect: func(x: f64, y: f64, w: f64, h: f64);
+        fill: func();
+        stroke: func();
+    }
+
+    // Acquire the 2D context from an HTMLCanvasElement
+    get-context: func(canvas: borrow<element>) -> result<context2d, string>;
+}
