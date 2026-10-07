@@ -1,0 +1,41 @@
+package servo:dom@0.1.0;
+
+interface events {
+    // Modifier keys (Shift, Ctrl, Alt, Meta/Cmd)
+    record modifiers {
+        shift: bool,
+        ctrl: bool,
+        alt: bool,
+        meta: bool,
+    }
+
+    // High-precision pointer/mouse data
+    record mouse-data {
+        // Element-local coordinates (crucial for Canvas and Kurbo hit-testing)
+        offset-x: f64,
+        offset-y: f64,
+        // Viewport coordinates
+        client-x: f64,
+        client-y: f64,
+        // Button state (0=none, 1=left, 2=right, 4=middle)
+        button: u16,
+        buttons: u16,
+        mods: modifiers,
+    }
+
+    // Keyboard data
+    record keyboard-data {
+        key: string,      // e.g. "Escape", "Enter", "Shift", "a"
+        code: string,     // e.g. "KeyA", "Space", "Backspace"
+        repeat: bool,
+        mods: modifiers,
+    }
+
+    // Extensible event payload variant
+    variant event-payload {
+        none,
+        mouse(mouse-data),
+        keyboard(keyboard-data),
+        custom(string),
+    }
+}

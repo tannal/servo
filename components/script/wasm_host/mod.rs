@@ -17,6 +17,7 @@ use std::sync::LazyLock;
 use js::context::JSContext;
 use script_bindings::realms::enter_auto_realm;
 use servo_wasm::{COMPONENT_REGISTRY, SERVO_WASM_ENGINE};
+use wit_dom::servo::dom::events::{EventPayload, KeyboardData, Modifiers, MouseData};
 use wasmtime::Store;
 use wasmtime::component::{HasSelf, Linker};
 
@@ -29,6 +30,8 @@ pub mod wit_dom {
         path: "wasm_host/wit",
     });
 }
+
+impl wit_dom::servo::dom::events::Host for WasmHostState {}
 
 use wit_dom::App;
 
@@ -49,6 +52,8 @@ pub fn dispatch_wasm_event(
     app_index: usize,
     handler_id: &str,
     event_type: &str,
+    mouse_data: Option<(f64, f64, f64, f64, u16, u16, bool, bool, bool, bool)>,
+    key_data: Option<(String, String, bool, bool, bool, bool, bool)>,
 ) {
     let instance = ACTIVE_WASM_APPS.with(|apps| {
         let mut apps_borrow = apps.borrow_mut();
@@ -58,19 +63,36 @@ pub fn dispatch_wasm_event(
             None
         }
     });
-
+    // Construct the typed WIT EventPayload
+    let payload = if let Some((ox, oy, cx, cy, btn, btns, s, c, a, m)) = mouse_data {
+        EventPayload::Mouse(MouseData {
+            offset_x: ox,
+            offset_y: oy,
+            client_x: cx,
+            client_y: cy,
+            button: btn,
+            buttons: btns,
+            mods: Modifiers { shift: s, ctrl: c, alt: a, meta: m },
+        })
+    } else if let Some((k, code, repeat, s, c, a, m)) = key_data {
+        EventPayload::Keyboard(KeyboardData {
+            key: k,
+            code,
+            repeat,
+            mods: Modifiers { shift: s, ctrl: c, alt: a, meta: m },
+        })
+    } else {
+        EventPayload::None
+    };
     if let Some((mut store, app)) = instance {
         store.data_mut().cx = cx;
-
         let global = store.data().global_scope.clone();
         let _realm = enter_auto_realm::<crate::dom::bindings::codegen::DomTypeHolder::DomTypeHolder>(
             cx, &*global,
         );
-
-        if let Err(e) = app.call_on_event(&mut store, handler_id, event_type) {
+        if let Err(e) = app.call_on_event(&mut store, handler_id, event_type, &payload) {
             eprintln!("[Servo Wasm Error on-event]: {:?}", e);
         }
-
         ACTIVE_WASM_APPS.with(|apps| {
             let mut apps_borrow = apps.borrow_mut();
             if app_index < apps_borrow.len() {

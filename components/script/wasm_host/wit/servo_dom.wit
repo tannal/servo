@@ -36,7 +36,8 @@ world app {
     import console;
     import document;
     import canvas2d;
+    use events.{event-payload};
 
     export run: func();
-    export on-event: func(handler-id: string, event-type: string);
+    export on-event: func(handler-id: string, event-type: string, payload: event-payload);
 }

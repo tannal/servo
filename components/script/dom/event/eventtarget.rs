@@ -34,6 +34,8 @@ use crate::conversions::Convert;
 use crate::dom::abortsignal::{AbortAlgorithm, RemovableDomEventListener};
 use crate::dom::beforeunloadevent::BeforeUnloadEvent;
 use crate::dom::bindings::callback::{CallbackContainer, CallbackFunction, ExceptionHandling};
+use crate::script_bindings::codegen::GenericBindings::ElementBinding::ElementMethods;
+use crate::script_bindings::codegen::GenericBindings::DOMRectBinding::DOMRectMethods;
 use crate::dom::bindings::codegen::Bindings::BeforeUnloadEventBinding::BeforeUnloadEventMethods;
 use crate::dom::bindings::codegen::Bindings::ErrorEventBinding::ErrorEventMethods;
 use crate::dom::bindings::codegen::Bindings::EventBinding::EventMethods;
@@ -75,6 +77,10 @@ use crate::dom::window::Window;
 use crate::dom::workerglobalscope::WorkerGlobalScope;
 use crate::realms::enter_auto_realm;
 use crate::runtime::script_runtime::IntroductionType;
+use crate::dom::bindings::codegen::Bindings::MouseEventBinding::MouseEventMethods;
+use crate::dom::bindings::codegen::Bindings::KeyboardEventBinding::KeyboardEventMethods;
+use crate::dom::mouseevent::MouseEvent;
+use crate::dom::keyboardevent::KeyboardEvent;
 
 /// <https://html.spec.whatwg.org/multipage/#event-handler-content-attributes>
 /// Generated from WebIDL definitions of EventHandler attributes on interfaces
@@ -249,9 +255,44 @@ impl CompiledEventListener {
                     "[Servo EventTarget]: Firing native Wasm handler '{}' for event '{}'",
                     handler_id, event_type
                 );
-                // 1. Enter the target global realm using the cx passed into call_or_handle_event
+
+                let key_data = event.downcast::<KeyboardEvent>().map(|k| {
+                    (
+                        k.Key().to_string(),
+                        k.Code().to_string(),
+                        k.Repeat(),
+                        k.ShiftKey(),
+                        k.CtrlKey(),
+                        k.AltKey(),
+                        k.MetaKey(),
+                    )
+                });
                 let mut realm = enter_auto_realm(cx, &*self.associated_global());
                 let cx = &mut realm.current_realm();
+                
+                let mouse_data: Option<(f64, f64, f64, f64, u16, u16, bool, bool, bool, bool)> = if let Some(mouse_event) = event.downcast::<MouseEvent>() {
+                    let client_x = mouse_event.ClientX() as f64;
+                    let cy = mouse_event.ClientY() as f64;
+                    // Directly query the layout engine's border_box from the target Node:
+                    let (ox, oy) = if let Some(node) = object.downcast::<Node>() {
+                        let rect = node.border_box().unwrap_or_default();
+                        (
+                            client_x - rect.origin.x.to_f64_px(),
+                            cy - rect.origin.y.to_f64_px(),
+                        )
+                    } else {
+                        (client_x, cy)
+                    };
+                    let btn: u16 = mouse_event.Button() as u16;
+                    let btns: u16 = mouse_event.Buttons();
+                    let s: bool = mouse_event.ShiftKey();
+                    let c: bool = mouse_event.CtrlKey();
+                    let a: bool = mouse_event.AltKey();
+                    let m: bool = mouse_event.MetaKey();
+                    Some((ox, oy, client_x, cy, btn, btns, s, c, a, m))
+                } else {
+                    None
+                };
 
                 // 2. Dispatch event to Wasm host with active JSContext
                 crate::wasm_host::dispatch_wasm_event(
@@ -259,6 +300,8 @@ impl CompiledEventListener {
                     0,
                     &handler_id.to_string(),
                     &event_type.to_string(),
+                    mouse_data,
+                    key_data,
                 );
                 Ok(())
             },
@@ -268,8 +311,8 @@ impl CompiledEventListener {
             CompiledEventListener::Handler(ref handler) => {
                 match *handler {
                     CommonEventHandler::ErrorEventHandler(ref handler) => {
-                        if let Some(event) = event.downcast::<ErrorEvent>() &&
-                            (object.is::<Window>() || object.is::<WorkerGlobalScope>())
+                        if let Some(event) = event.downcast::<ErrorEvent>()
+                            && (object.is::<Window>() || object.is::<WorkerGlobalScope>())
                         {
                             rooted!(&in(cx) let mut error: JSVal);
                             event.Error(error.handle_mut());
@@ -286,9 +329,9 @@ impl CompiledEventListener {
                                 exception_handle,
                             );
                             // Step 4
-                            if let Ok(()) = return_value &&
-                                rooted_return_value.handle().is_boolean() &&
-                                rooted_return_value.handle().to_boolean()
+                            if let Ok(()) = return_value
+                                && rooted_return_value.handle().is_boolean()
+                                && rooted_return_value.handle().to_boolean()
                             {
                                 event.upcast::<Event>().PreventDefault();
                             }
@@ -583,10 +626,10 @@ impl EventTarget {
         let event_type = ty.trim_matches(HTML_SPACE_CHARACTERS);
 
         // type is one of "touchstart", "touchmove", "wheel", or "mousewheel"
-        let matches_event_type = event_type.eq_ignore_ascii_case("touchstart") ||
-            event_type.eq_ignore_ascii_case("touchmove") ||
-            event_type.eq_ignore_ascii_case("wheel") ||
-            event_type.eq_ignore_ascii_case("mousewheel");
+        let matches_event_type = event_type.eq_ignore_ascii_case("touchstart")
+            || event_type.eq_ignore_ascii_case("touchmove")
+            || event_type.eq_ignore_ascii_case("wheel")
+            || event_type.eq_ignore_ascii_case("mousewheel");
 
         if !matches_event_type {
             return false;
@@ -656,9 +699,9 @@ impl EventTarget {
     pub(crate) fn remove_listener(&self, ty: &Atom, entry: &Rc<RefCell<EventListenerEntry>>) {
         let mut handlers = self.handlers.borrow_mut();
 
-        if let Some(handlers) = handlers.as_mut() &&
-            let Some(entries) = handlers.get_mut(ty) &&
-            let Some(position) = entries.iter().position(|e| *e == *entry)
+        if let Some(handlers) = handlers.as_mut()
+            && let Some(entries) = handlers.get_mut(ty)
+            && let Some(position) = entries.iter().position(|e| *e == *entry)
         {
             entries.remove(position).borrow_mut().removed = true;
             self.notify_listener_removed(ty);
@@ -1051,8 +1094,8 @@ impl EventTarget {
         };
         let ty_atom = Atom::from(ty);
         let mut handlers = self.handlers.borrow_mut();
-        if let Some(handlers) = handlers.as_mut() &&
-            let Some(entries) = handlers.get_mut(&ty_atom)
+        if let Some(handlers) = handlers.as_mut()
+            && let Some(entries) = handlers.get_mut(&ty_atom)
         {
             let phase = if options.capture {
                 ListenerPhase::Capturing
@@ -1140,8 +1183,8 @@ impl EventTarget {
             if !a_root.is::<ShadowRoot>() {
                 return a;
             }
-            if let Some(b_node) = b.downcast::<Node>() &&
-                a_root.is_shadow_including_inclusive_ancestor_of(b_node)
+            if let Some(b_node) = b.downcast::<Node>()
+                && a_root.is_shadow_including_inclusive_ancestor_of(b_node)
             {
                 return a;
             }
