@@ -35,6 +35,7 @@ interface document {
 world app {
     import console;
     import document;
+    import canvas2d;
 
     export run: func();
     export on-event: func(handler-id: string, event-type: string);
