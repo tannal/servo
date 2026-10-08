@@ -196,8 +196,7 @@ impl HTMLVideoElement {
                     return;
                 };
                 self.image_key.set(Some(new_key));
-                updates.push(ImageUpdate::AddImage(new_key, descriptor, image_data, false));
-                updates.push(ImageUpdate::DeleteImage(old_key));
+                updates.push(ImageUpdate::UpdateImage(new_key, descriptor, image_data, None));
             },
             None => {
                 // First frame: allocate initial ImageKey
