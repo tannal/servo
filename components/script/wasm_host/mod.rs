@@ -6,6 +6,7 @@
 
 pub mod canvas;
 pub mod console;
+pub mod video;
 pub mod dom;
 pub mod state;
 
