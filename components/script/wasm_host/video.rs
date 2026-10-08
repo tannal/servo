@@ -45,29 +45,28 @@ impl WasmMediaClock {
 }
 
 pub fn start_wasm_media_clock(document: &Document, is_playing: Arc<AtomicBool>) {
-    // 1. Get a thread-safe task source for ScriptThread
     let task_source = document
         .window()
         .as_global_scope()
         .task_manager()
         .dom_manipulation_task_source()
         .to_sendable();
-    // 2. Safely capture the document handle across threads
     let trusted_doc = Trusted::new(document);
-    // 3. Spawn background media clock thread (30 fps = ~33ms)
     thread::spawn(move || {
         while is_playing.load(Ordering::Relaxed) {
-            thread::sleep(Duration::from_millis(33));
+            thread::sleep(Duration::from_millis(33)); // 30 fps
             let trusted_doc = trusted_doc.clone();
             task_source.queue(task!(wasm_media_tick: move |cx| {
                 let doc = trusted_doc.root();
-                let atom_id = Atom::from("wasm-video");
-                // Find <video id="wasm-video"> and fire the "tick" event
-                if let Some(element) = doc.get_element_by_id(cx.no_gc(), &atom_id) {
-                    element
-                        .upcast::<EventTarget>()
-                        .fire_event(cx, Atom::from("tick"));
-                }
+                // Call the Wasm event dispatcher directly (bypassing DOM event listener table)
+                let _ = crate::wasm_host::dispatch_wasm_event(
+                    cx,
+                    0, // app_index
+                    &"wasm-video".to_string(),
+                    &"tick".to_string(),
+                    None,
+                    None,
+                );
             }));
         }
     });
@@ -83,6 +82,8 @@ impl Buffer for WasmVideoBuffer {
         Some(VideoFrameData::Raw(self.data.clone()))
     }
 }
+
+static CLOCK_STARTED: AtomicBool = AtomicBool::new(false);
 
 #[allow(unsafe_code)]
 impl VideoHost for WasmHostState {
@@ -114,8 +115,6 @@ impl VideoHost for WasmHostState {
                 }
             }
         }
-
-        static CLOCK_STARTED: AtomicBool = AtomicBool::new(false);
 
         if !CLOCK_STARTED.swap(true, Ordering::Relaxed) {
             let is_playing = Arc::new(AtomicBool::new(true));
