@@ -36,6 +36,7 @@ world app {
     import console;
     import document;
     import canvas2d;
+    import video;
     use events.{event-payload};
 
     export run: func();
