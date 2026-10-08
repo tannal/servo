@@ -5,19 +5,19 @@
 use js::context::NoGC;
 use script_bindings::refcounted::Trusted;
 use std::sync::Arc;
-use style::Atom;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::thread;
 use std::time::Duration;
+use style::Atom;
 
 // Use the existing servo_media dependency from Cargo.toml
 use servo_media::player::video::{Buffer, VideoFrame, VideoFrameData};
 
+use crate::dom::Document;
 use crate::dom::bindings::codegen::Bindings::WindowBinding::WindowMethods;
 use crate::dom::bindings::inheritance::Castable;
-use crate::dom::htmlvideoelement::HTMLVideoElement;
-use crate::dom::Document;
 use crate::dom::eventtarget::EventTarget;
+use crate::dom::htmlvideoelement::HTMLVideoElement;
 
 // Import the correct generated trait from `wit_dom`
 use super::wit_dom::servo::dom::video::{Host as VideoHost, PixelFormat, VideoMetadata};
@@ -45,8 +45,16 @@ impl WasmMediaClock {
 }
 
 static TICK_IN_FLIGHT: AtomicBool = AtomicBool::new(false);
+static ACTIVE_DOC_ADDR: AtomicUsize = AtomicUsize::new(0);
 
 pub fn start_wasm_media_clock(document: &Document, is_playing: Arc<AtomicBool>) {
+    let current_doc_addr = document as *const Document as usize;
+    // 1. Guard against duplicate threads on the same Document
+    if ACTIVE_DOC_ADDR.swap(current_doc_addr, Ordering::SeqCst) == current_doc_addr {
+        return;
+    }
+    // 2. Reset in-flight guard so a reload (Ctrl+R) never inherits a stuck lock
+    TICK_IN_FLIGHT.store(false, Ordering::Release);
     let task_source = document
         .window()
         .as_global_scope()
@@ -54,27 +62,41 @@ pub fn start_wasm_media_clock(document: &Document, is_playing: Arc<AtomicBool>) 
         .dom_manipulation_task_source()
         .to_sendable();
     let trusted_doc = Trusted::new(document);
-    thread::spawn(move || {
-        while is_playing.load(Ordering::Relaxed) {
-            thread::sleep(Duration::from_millis(33));
-            // Skip queuing if the script thread hasn't finished the previous tick yet:
-            if TICK_IN_FLIGHT.compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed).is_err() {
-                continue; 
+    thread::Builder::new()
+        .name("wasm-media-clock".into())
+        .spawn(move || {
+            while is_playing.load(Ordering::Relaxed) {
+                thread::sleep(Duration::from_millis(33));
+                // 3. Exit immediately if the user reloaded (Ctrl+R) or navigated away
+                if ACTIVE_DOC_ADDR.load(Ordering::Relaxed) != current_doc_addr {
+                    break;
+                }
+                // 4. Drop tick if the script thread is still processing the previous tick
+                if TICK_IN_FLIGHT
+                    .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
+                    .is_err()
+                {
+                    continue;
+                }
+                task_source.queue(task!(wasm_media_tick: move |cx| {
+                    let _ = crate::wasm_host::dispatch_wasm_event(
+                        cx,
+                        0,
+                        &"wasm-video".to_string(),
+                        &"tick".to_string(),
+                        None,
+                        None,
+                    );
+                    TICK_IN_FLIGHT.store(false, Ordering::Release);
+                }));
+                // 5. If queueing failed (window destroyed/cancelled), release lock and terminate
+                // if res.is_err() {
+                //     TICK_IN_FLIGHT.store(false, Ordering::Release);
+                //     break;
+                // }
             }
-            let trusted_doc = trusted_doc.clone();
-            task_source.queue(task!(wasm_media_tick: move |cx| {
-                let _ = crate::wasm_host::dispatch_wasm_event(
-                    cx,
-                    0,
-                    &"wasm-video".to_string(),
-                    &"tick".to_string(),
-                    None,
-                    None,
-                );
-                TICK_IN_FLIGHT.store(false, Ordering::Release);
-            }));
-        }
-    });
+        })
+        .expect("Failed to spawn wasm-media-clock thread");
 }
 
 /// Buffer implementation that wraps an in-memory frame decoded by Wasm
@@ -121,10 +143,8 @@ impl VideoHost for WasmHostState {
             }
         }
 
-        if !CLOCK_STARTED.swap(true, Ordering::Relaxed) {
-            let is_playing = Arc::new(AtomicBool::new(true));
-            start_wasm_media_clock(&document, is_playing);
-        }
+        let is_playing = Arc::new(AtomicBool::new(true));
+        start_wasm_media_clock(&document, is_playing);
     }
 
     fn update_time(&mut self, element_id: String, current_time: f64) {
