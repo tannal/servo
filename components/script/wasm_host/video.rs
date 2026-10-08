@@ -44,6 +44,8 @@ impl WasmMediaClock {
     }
 }
 
+static TICK_IN_FLIGHT: AtomicBool = AtomicBool::new(false);
+
 pub fn start_wasm_media_clock(document: &Document, is_playing: Arc<AtomicBool>) {
     let task_source = document
         .window()
@@ -54,19 +56,22 @@ pub fn start_wasm_media_clock(document: &Document, is_playing: Arc<AtomicBool>) 
     let trusted_doc = Trusted::new(document);
     thread::spawn(move || {
         while is_playing.load(Ordering::Relaxed) {
-            thread::sleep(Duration::from_millis(33)); // 30 fps
+            thread::sleep(Duration::from_millis(33));
+            // Skip queuing if the script thread hasn't finished the previous tick yet:
+            if TICK_IN_FLIGHT.compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed).is_err() {
+                continue; 
+            }
             let trusted_doc = trusted_doc.clone();
             task_source.queue(task!(wasm_media_tick: move |cx| {
-                let doc = trusted_doc.root();
-                // Call the Wasm event dispatcher directly (bypassing DOM event listener table)
                 let _ = crate::wasm_host::dispatch_wasm_event(
                     cx,
-                    0, // app_index
+                    0,
                     &"wasm-video".to_string(),
                     &"tick".to_string(),
                     None,
                     None,
                 );
+                TICK_IN_FLIGHT.store(false, Ordering::Release);
             }));
         }
     });
