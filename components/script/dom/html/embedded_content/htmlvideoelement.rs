@@ -12,7 +12,7 @@ use euclid::default::Size2D;
 use html5ever::{LocalName, Prefix, local_name, ns};
 use js::context::{JSContext, NoGC};
 use js::rust::HandleObject;
-use layout_api::{HTMLMediaData, MediaMetadata};
+use layout_api::{HTMLMediaData, MediaFrame, MediaMetadata};
 use net_traits::blob_url_store::UrlWithBlobClaim;
 use net_traits::image_cache::{
     ImageCache, ImageCacheResult, ImageLoadListener, ImageOrMetadataAvailable, ImageResponse,
@@ -22,9 +22,11 @@ use net_traits::request::{CredentialsMode, Destination, RequestBuilder, RequestI
 use net_traits::{
     CoreResourceThread, FetchMetadata, FetchResponseMsg, NetworkError, ResourceFetchTiming,
 };
+use paint_api::{ImageUpdate, SerializableImageData};
 use pixels::{Snapshot, SnapshotAlphaMode, SnapshotPixelFormat};
 use script_bindings::cell::DomRefCell;
 use script_bindings::error::Fallible;
+use servo_base::generic_channel::GenericSharedMemory;
 use servo_media::player::video::VideoFrame;
 use servo_url::ServoUrl;
 use style::attr::{AttrValue, LengthOrPercentageOrAuto};
@@ -44,14 +46,20 @@ use crate::dom::html::htmlmediaelement::{HTMLMediaElement, NetworkState, ReadySt
 use crate::dom::node::virtualmethods::VirtualMethods;
 use crate::dom::node::{Node, NodeDamage, NodeTraits};
 use crate::dom::performance::performanceresourcetiming::InitiatorType;
+use crate::dom::eventtarget::EventTarget;
 use crate::event_loop::document_loader::{LoadBlocker, LoadType};
 use crate::fetch::fetch::{FetchCanceller, RequestWithGlobalScope};
 use crate::fetch::network_listener::{self, FetchResponseListener, ResourceTimingListener};
 use crate::url::ensure_blob_referenced_by_url_is_kept_alive;
+use webrender_api::{ImageDescriptor, ImageDescriptorFlags, ImageFormat, ImageKey};
 
 #[dom_struct]
 pub(crate) struct HTMLVideoElement {
     htmlmediaelement: HTMLMediaElement,
+    #[no_trace]
+    image_key: Cell<Option<ImageKey>>,
+    frame_width: Cell<u32>,
+    frame_height: Cell<u32>,
     /// <https://html.spec.whatwg.org/multipage/#dom-video-videowidth>
     video_width: Cell<Option<u32>>,
     /// <https://html.spec.whatwg.org/multipage/#dom-video-videoheight>
@@ -82,6 +90,9 @@ impl HTMLVideoElement {
     ) -> HTMLVideoElement {
         HTMLVideoElement {
             htmlmediaelement: HTMLMediaElement::new_inherited(local_name, prefix, document),
+            image_key: Cell::new(None),
+            frame_width: Cell::new(0),
+            frame_height: Cell::new(0),
             video_width: Cell::new(None),
             video_height: Cell::new(None),
             poster_url: Default::default(),
@@ -110,6 +121,17 @@ impl HTMLVideoElement {
         )
     }
 
+    pub(crate) fn get_metadata(&self) -> Option<MediaMetadata> {
+        if self.frame_width.get() > 0 && self.frame_height.get() > 0 {
+            Some(MediaMetadata {
+                width: self.frame_width.get(),
+                height: self.frame_height.get(),
+            })
+        } else {
+            None
+        }
+    }
+
     pub(crate) fn get_video_width(&self) -> Option<u32> {
         self.video_width.get()
     }
@@ -133,6 +155,78 @@ impl HTMLVideoElement {
 
         self.upcast::<Node>().dirty(no_gc, NodeDamage::Other);
         true
+    }
+
+    #[allow(unsafe_code)]
+    pub fn handle_wasm_video_frame(&self, frame: VideoFrame) {
+        let no_gc: NoGC = unsafe { NoGC::new() };
+
+        let w = frame.get_width();   // i32 for WebRender
+        let h = frame.get_height();  // i32 for WebRender
+        let w_u32 = w.max(0) as u32; // u32 for DOM
+        let h_u32 = h.max(0) as u32;
+
+        let size_changed =
+            self.video_width.get() != Some(w_u32) || self.video_height.get() != Some(h_u32);
+
+        // 1. Update DOM natural dimensions and trigger resize event if resolution changed
+        if size_changed {
+            self.set_natural_dimensions(&no_gc, Some(w_u32), Some(h_u32));
+        }
+
+        // 2. Prepare WebRender GPU texture transaction
+        let document = self.owner_document();
+        let webview_id = document.webview_id();
+        let paint_api = document.window().paint_api();
+
+        let descriptor =
+            ImageDescriptor::new(w, h, ImageFormat::BGRA8, ImageDescriptorFlags::empty());
+        let image_data =
+            SerializableImageData::Raw(GenericSharedMemory::from_arc_vec(frame.get_data()));
+        let mut updates = smallvec::smallvec![];
+
+        match self.image_key.get() {
+            Some(key) if !size_changed => {
+                // Steady-state: update texture pixels in-place for existing ImageKey
+                updates.push(ImageUpdate::UpdateImage(key, descriptor, image_data, None));
+            },
+            Some(old_key) => {
+                // Resolution changed: allocate new ImageKey and delete old GPU texture
+                let Some(new_key) = paint_api.generate_image_key_blocking(webview_id) else {
+                    return;
+                };
+                self.image_key.set(Some(new_key));
+                updates.push(ImageUpdate::AddImage(new_key, descriptor, image_data, false));
+                updates.push(ImageUpdate::DeleteImage(old_key));
+            },
+            None => {
+                // First frame: allocate initial ImageKey
+                let Some(key) = paint_api.generate_image_key_blocking(webview_id) else {
+                    return;
+                };
+                self.image_key.set(Some(key));
+                updates.push(ImageUpdate::AddImage(key, descriptor, image_data, false));
+            },
+        }
+
+        // 3. Dispatch GPU updates directly to WebRender compositor
+        paint_api.update_images(webview_id.into(), updates);
+
+        // 4. Update last frame copy and mark element damaged for repaint
+        self.generation_id.set(self.generation_id.get() + 1);
+        *self.last_frame.borrow_mut() = Some(frame);
+
+        self.upcast::<Node>().dirty(&no_gc, NodeDamage::Other);
+    }
+
+    pub fn set_current_time_from_wasm(&self, cx: &mut JSContext, _time: f64) {
+        eprintln!("[HTMLVideoElement]: get_current_frame_data called! has_last_frame={}", self.last_frame.borrow().is_some());
+        let frame: Option<VideoFrame> = self.htmlmediaelement.get_current_frame();
+        if frame.is_some() {
+            *self.last_frame.borrow_mut() = frame;
+        }
+        let target = self.upcast::<EventTarget>();
+        target.fire_event(cx, atom!("timeupdate"));
     }
 
     /// Gets the copy of the video frame at the current playback position,
@@ -399,18 +493,12 @@ impl HTMLVideoElementMethods<crate::DomTypeHolder> for HTMLVideoElement {
 
     /// <https://html.spec.whatwg.org/multipage/#dom-video-videowidth>
     fn VideoWidth(&self) -> u32 {
-        if self.htmlmediaelement.get_ready_state() == ReadyState::HaveNothing {
-            return 0;
-        }
-        self.video_width.get().unwrap_or(0)
+        self.frame_width.get()
     }
 
     /// <https://html.spec.whatwg.org/multipage/#dom-video-videoheight>
     fn VideoHeight(&self) -> u32 {
-        if self.htmlmediaelement.get_ready_state() == ReadyState::HaveNothing {
-            return 0;
-        }
-        self.video_height.get().unwrap_or(0)
+        self.frame_height.get()
     }
 
     // https://html.spec.whatwg.org/multipage/#dom-video-poster
@@ -604,16 +692,28 @@ impl LayoutDom<'_, HTMLVideoElement> {
         let video = self.unsafe_get();
 
         // Get the current frame being rendered.
-        let current_frame = video.htmlmediaelement.get_current_frame_to_present();
+        let current_frame = video
+            .image_key
+            .get()
+            .map(|image_key| MediaFrame {
+                image_key,
+                width: video.frame_width.get() as i32,
+                height: video.frame_height.get() as i32,
+            })
+            .or_else(|| video.htmlmediaelement.get_current_frame_to_present());
 
         // This value represents the natural width and height of the video.
         // It may exist even if there is no current frame (for example, after the
         // metadata of the video is loaded).
         let metadata = video
-            .get_video_width()
-            .zip(video.get_video_height())
-            .map(|(width, height)| MediaMetadata { width, height });
-
+            .get_metadata()
+            .or_else(|| {
+                video.image_key.get().map(|_| MediaMetadata {
+                    width: video.frame_width.get(),
+                    height: video.frame_height.get(),
+                })
+            });
+        
         HTMLMediaData {
             current_frame,
             metadata,

@@ -1,0 +1,33 @@
+package servo:dom@0.1.0;
+
+interface video {
+    enum pixel-format {
+        rgba8,
+        bgra8,
+    }
+
+    record video-metadata {
+        width: u32,
+        height: u32,
+        duration: f64,
+        frame-rate: f32,
+    }
+
+    /// Registers a video stream for a given <video id="..."> element
+    register-stream: func(element-id: string, metadata: video-metadata) -> bool;
+
+    /// Submits a decoded video frame directly to the video element
+    submit-frame: func(
+        element-id: string,
+        width: u32,
+        height: u32,
+        format: pixel-format,
+        data: list<u8>
+    );
+
+    /// Updates the element's current playback position in seconds
+    update-time: func(element-id: string, current-time: f64);
+
+    /// Signals end of stream to trigger the 'ended' event
+    end-of-stream: func(element-id: string);
+}
