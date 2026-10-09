@@ -9,6 +9,7 @@ pub mod console;
 pub mod video;
 pub mod dom;
 pub mod state;
+pub mod tailwind;
 
 pub use state::WasmHostState;
 
