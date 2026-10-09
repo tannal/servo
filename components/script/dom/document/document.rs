@@ -2310,6 +2310,9 @@ impl Document {
     /// Step 8 of <https://html.spec.whatwg.org/multipage/#the-end>
     /// <https://html.spec.whatwg.org/multipage/#delay-the-load-event>
     pub(crate) fn finish_load(&self, load: LoadType, cx: &mut JSContext) {
+        if pref!(dom_wasm_tailwindcss_enabled) {
+            self.flush_tailwind_rules(cx);
+        }
         // This does not delay the load event anymore.
         debug!("Document got finish_load: {:?}", load);
         self.loader.borrow_mut().finish_load(&load);

@@ -1238,10 +1238,6 @@ impl ScriptThread {
                 continue;
             }
 
-            if pref!(dom_wasm_tailwindcss_enabled) {
-                document.flush_tailwind_rules(cx);
-            }
-
             // > 21. For each doc of docs, mark paint timing for doc.
             // Note: Implemented inside `Document::update_the_rendering`
 
