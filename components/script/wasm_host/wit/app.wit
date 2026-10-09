@@ -1,0 +1,13 @@
+package servo:dom@0.1.0;
+
+world app {
+    import console;
+    import document;
+    import canvas2d;
+    import video;
+
+    use events.{event-payload};
+
+    export run: func();
+    export on-event: func(handler-id: string, event-type: string, payload: event-payload);
+}

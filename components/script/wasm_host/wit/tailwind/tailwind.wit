@@ -1,0 +1,16 @@
+package servo:tailwind@0.1.0;
+
+interface console {
+    log: func(message: string);
+    error: func(message: string);
+}
+
+interface compiler {
+    compile-classes: func(classes: string) -> string;
+    compile-candidates: func(candidates: list<string>) -> string;
+}
+
+world tailwind {
+    import console;
+    export compiler;
+}

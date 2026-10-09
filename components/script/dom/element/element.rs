@@ -43,6 +43,7 @@ use selectors::attr::CaseSensitivity;
 use selectors::matching::ElementSelectorFlags;
 use selectors::sink::Push;
 use servo_arc::Arc as ServoArc;
+use servo_config::pref;
 use style::applicable_declarations::ApplicableDeclarationBlock;
 use style::attr::{AttrValue, LengthOrPercentageOrAuto};
 use style::context::QuirksMode;
@@ -4802,6 +4803,13 @@ impl VirtualMethods for Element {
                                 doc.unregister_element_name(&value);
                             }
                         },
+                    }
+                }
+            },
+            local_name!("class") => {
+                if pref!(dom_wasm_tailwindcss_enabled) {
+                    if let AttributeMutation::Set(_) = mutation {
+                        doc.note_tailwind_classes(attr.value().as_tokens());
                     }
                 }
             },

@@ -108,6 +108,8 @@ pub struct Preferences {
     /// The amount of time that a half cycle of a text caret blink takes in milliseconds.
     /// If this value is less than or equal to zero, then caret blink is disabled.
     pub editing_caret_blink_time: i64,
+    /// Feature: In-engine native Tailwind CSS JIT compiler via embedded WebAssembly.
+    pub dom_wasm_tailwindcss_enabled: bool,
     pub css_animations_testing_enabled: bool,
     /// Start the devtools server at startup
     pub devtools_server_enabled: bool,
@@ -413,6 +415,7 @@ pub struct Preferences {
 impl Preferences {
     const fn const_default() -> Self {
         Self {
+            dom_wasm_tailwindcss_enabled: false,
             css_animations_testing_enabled: false,
             editing_caret_blink_time: 600,
             devtools_server_enabled: false,

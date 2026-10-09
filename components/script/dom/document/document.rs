@@ -14,6 +14,7 @@ use std::rc::Rc;
 use std::str::FromStr;
 use std::sync::{Arc as StdArc, LazyLock};
 use std::time::Duration;
+use servo_arc::Arc as ServoArc;
 
 use bitflags::bitflags;
 use chrono::Local;
@@ -77,6 +78,9 @@ use servo_url::{ImmutableOrigin, MutableOrigin, ServoUrl};
 use style::attr::AttrValue;
 use style::context::QuirksMode;
 use style::dom::OpaqueNode;
+use style::error_reporting::RustLogReporter;
+use style::media_queries::MediaList;
+use style::stylesheets::{AllowImportRules, UrlExtraData};
 use style::invalidation::element::restyle_hints::RestyleHint;
 use style::selector_parser::Snapshot;
 use style::shared_lock::{SharedRwLock, SharedRwLockReadGuard};
@@ -451,6 +455,17 @@ pub(crate) struct Document {
     /// objects. This is shared with the owning [`ScriptThread`].
     #[no_trace]
     shared_style_locks: SharedRwLocks,
+    /// All Tailwind classes compiled so far (O(1) pointer-equality lookups)
+    #[no_trace]
+    #[ignore_malloc_size_of = "tailwind compiled atom cache"]
+    tailwind_compiled: RefCell<FxHashSet<Atom>>,
+    /// Uncompiled classes waiting for the next render frame
+    #[no_trace]
+    #[ignore_malloc_size_of = "tailwind compiled atom cache"]
+    tailwind_pending: RefCell<Vec<Atom>>,
+    #[no_trace]
+    #[ignore_malloc_size_of = "tailwind compiled atom cache"]
+    tailwind_stylesheet: DomRefCell<Option<Arc<Stylesheet>>>,
     /// List of stylesheets associated with nodes in this document. |None| if the list needs to be refreshed.
     #[custom_trace]
     stylesheets: DomRefCell<DocumentStylesheetSet<ServoStylesheetInDocument>>,
@@ -801,6 +816,67 @@ impl Document {
 
     pub(crate) fn pipeline_id(&self) -> PipelineId {
         self.pipeline_id
+    }
+
+    pub(crate) fn note_tailwind_classes(&self, tokens: &[Atom]) {
+        let mut compiled = self.tailwind_compiled.borrow_mut();
+        let mut pending = self.tailwind_pending.borrow_mut();
+        for token in tokens {
+            if compiled.insert(token.clone()) {
+                pending.push(token.clone());
+            }
+        }
+    }
+
+    pub(crate) fn flush_tailwind_rules(&self, no_gc: &NoGC) {
+        if !servo_config::pref!(dom_wasm_tailwindcss_enabled) {
+            return;
+        }
+        let pending_candidates: Vec<String> = {
+            let mut pending = self.tailwind_pending.borrow_mut();
+            if pending.is_empty() {
+                return;
+            }
+            pending.drain(..).map(|atom| atom.to_string()).collect()
+        };
+        let generated_css = match crate::wasm_host::tailwind::compile_candidates(&pending_candidates) {
+            Ok(css) if !css.is_empty() => {
+                eprintln!("[Tailwind Document]: Passing {} bytes of CSS to append_tailwind_css", css.len());
+                css
+            },
+            Ok(_) => {
+                eprintln!("[Tailwind Document]: Wasm returned EMPTY string");
+                return;
+            },
+            Err(e) => {
+                eprintln!("[Tailwind Document]: compile_candidates error: {:?}", e);
+                return;
+            }
+        };
+        self.append_tailwind_css(&generated_css, no_gc);
+    }
+
+    pub(crate) fn append_tailwind_css(&self, css: &str, no_gc: &NoGC) {
+        let shared_lock = crate::event_loop::script_thread::with_script_thread(|st| {
+            st.shared_style_locks().author.clone()
+        });
+        let media = ServoArc::new(shared_lock.wrap(MediaList::empty()));
+        let url_data = UrlExtraData::from(self.url().as_url().clone());
+        let sheet = Stylesheet::from_str(
+            css,
+            url_data,
+            Origin::Author,
+            media,
+            shared_lock,
+            None,
+            Some(&RustLogReporter),
+            QuirksMode::NoQuirks,
+            AllowImportRules::Yes,
+        );
+        let doc_sheet = ServoArc::new(sheet);
+        *self.tailwind_stylesheet.borrow_mut() = Some(doc_sheet.clone());
+        self.add_stylesheet_to_stylist(doc_sheet, None);
+        self.invalidate_stylesheets(no_gc);
     }
 
     /// <https://fullscreen.spec.whatwg.org/#fully-exit-fullscreen>
@@ -4081,6 +4157,9 @@ impl Document {
             applets: Default::default(),
             iframes: IFrameCollection::new(),
             shared_style_locks,
+            tailwind_compiled: RefCell::new(FxHashSet::default()),
+            tailwind_pending: RefCell::new(Vec::new()),
+            tailwind_stylesheet: DomRefCell::new(None),
             stylesheets: DomRefCell::new(DocumentStylesheetSet::new()),
             stylesheet_list: MutNullableDom::new(None),
             // https://html.spec.whatwg.org/multipage/#current-document-readiness
