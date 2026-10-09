@@ -1,0 +1,6 @@
+package servo:dom@0.1.0;
+
+interface console {
+    log: func(message: string);
+    error: func(message: string);
+}

@@ -1,10 +1,5 @@
 package servo:dom@0.1.0;
 
-interface console {
-    log: func(message: string);
-    error: func(message: string);
-}
-
 interface document {
     resource element {
         set-attribute: func(name: string, value: string);
@@ -30,15 +25,4 @@ interface document {
     get-body: func() -> result<element, string>;
     get-element-by-id: func(id: string) -> result<element, string>;
     query-selector: func(selector: string) -> option<element>;
-}
-
-world app {
-    import console;
-    import document;
-    import canvas2d;
-    import video;
-    use events.{event-payload};
-
-    export run: func();
-    export on-event: func(handler-id: string, event-type: string, payload: event-payload);
 }
