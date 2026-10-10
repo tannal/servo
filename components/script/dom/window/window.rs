@@ -2635,6 +2635,10 @@ impl Window {
     ) -> (ReflowPhasesRun, ReflowStatistics) {
         let document = self.Document();
 
+        if pref!(dom_wasm_tailwindcss_enabled) {
+            document.flush_tailwind_rules(cx.no_gc());
+        }
+
         // Never reflow inactive Documents.
         if !document.is_fully_active() {
             return Default::default();
