@@ -18,7 +18,7 @@ static TAILWIND_LINKER: LazyLock<Linker<()>> = LazyLock::new(|| {
     let engine = &*SERVO_WASM_ENGINE;
     let mut linker = Linker::new(engine);
     // Automatically link the console implementation from console.rs
-    crate::wasm_host::console::add_to_linker(&mut linker, "servo:tailwind/console")
+    crate::wasm_host::console::add_to_linker(&mut linker)
         .expect("[Servo Tailwind]: Failed to auto-link console implementation");
     linker
 });

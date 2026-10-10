@@ -24,16 +24,25 @@ impl ConsoleHost for WasmHostState {
 }
 
 /// Automatically registers the console interface onto any Wasmtime component Linker,
-/// matching any target instance name (e.g. "servo:tailwind/console" or "servo:dom/console").
-pub fn add_to_linker<T>(linker: &mut Linker<T>, instance_name: &str) -> wasmtime::Result<()> {
-    let mut inst = linker.instance(instance_name)?;
-    inst.func_wrap("log", |_caller: StoreContextMut<'_, T>, (message,): (String,)| {
-        host_log(&message);
-        Ok(())
-    })?;
-    inst.func_wrap("error", |_caller: StoreContextMut<'_, T>, (message,): (String,)| {
-        host_error(&message);
-        Ok(())
-    })?;
+pub fn add_to_linker<T: Send + 'static>(linker: &mut Linker<T>) -> wasmtime::Result<()> {
+    // Support both servo:dom/console@0.1.0 and servo:tailwind/console@0.1.0:
+    for instance_name in &[
+        "servo:dom/console@0.1.0",
+        "servo:dom/console",
+        "servo:tailwind/console@0.1.0",
+        "servo:tailwind/console",
+    ] {
+        let mut instance = linker.instance(instance_name)?;
+        // 1-tuple (message,): (String,) is required:
+        instance.func_wrap("log", |_caller, (message,): (String,)| {
+            host_log(&message);
+            Ok(())
+        })?;
+        // Add the missing error implementation:
+        instance.func_wrap("error", |_caller, (message,): (String,)| {
+            host_error(&message);
+            Ok(())
+        })?;
+    }
     Ok(())
 }
