@@ -523,6 +523,27 @@ impl EventTarget {
         }
     }
 
+    /// Remove a native WebAssembly event listener from this EventTarget.
+    pub(crate) fn remove_wasm_event_listener(&self, ty: DOMString, handler_id: &str) {
+        let ty_atom = Atom::from(ty);
+        let mut handlers = self.handlers.borrow_mut();
+        if let Some(handlers) = handlers.as_mut()
+            && let Some(entries) = handlers.get_mut(&ty_atom)
+        {
+            // Find the entry matching the Wasm handler_id using &**id for &str comparison
+            if let Some(position) = entries.iter().position(|entry| {
+                match &entry.borrow().listener {
+                    EventListenerType::Wasm(id, _) => &*id == handler_id,
+                    _ => false,
+                }
+            }) {
+                let entry = entries.remove(position);
+                entry.borrow_mut().removed = true;
+                self.notify_listener_removed(&ty_atom);
+            }
+        }
+    }
+
     /// Register a native WebAssembly event listener directly on this EventTarget!
     pub(crate) fn add_wasm_event_listener(&self, ty: DOMString, handler_id: DOMString) {
         let ty_atom = Atom::from(ty);
@@ -531,7 +552,15 @@ impl EventTarget {
             Occupied(entry) => entry.into_mut(),
             Vacant(entry) => entry.insert(EventListeners(vec![])),
         };
-
+        // Guard: do not add if this handler_id is already registered for this event type
+        if entries.iter().any(|entry| {
+            match &entry.borrow().listener {
+                EventListenerType::Wasm(id, _) => id == &handler_id,
+                _ => false,
+            }
+        }) {
+            return;
+        }
         let global = self.global();
         entries.push(Rc::new(RefCell::new(EventListenerEntry {
             phase: ListenerPhase::Bubbling,
