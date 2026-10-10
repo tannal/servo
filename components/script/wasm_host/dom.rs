@@ -7,6 +7,8 @@ use script_bindings::codegen::GenericUnionTypes::{
 };
 use wasmtime::component::Resource;
 
+use crate::dom::eventtarget::EventTarget;
+
 use crate::dom::bindings::codegen::Bindings::DocumentBinding::DocumentMethods;
 use crate::dom::bindings::codegen::Bindings::ElementBinding::ElementMethods;
 use crate::dom::bindings::codegen::Bindings::HTMLInputElementBinding::{
@@ -65,7 +67,7 @@ impl HostElement for WasmHostState {
     ) {
         let id = self_rep.rep() as usize;
         if let Some(Some(element)) = self.elements.get(id) {
-            let event_target = element.upcast::<crate::dom::eventtarget::EventTarget>();
+            let event_target = element.upcast::<EventTarget>();
             event_target.add_wasm_event_listener(
                 DOMString::from(event_type.clone()),
                 DOMString::from(handler_id.clone()),
@@ -79,10 +81,22 @@ impl HostElement for WasmHostState {
 
     fn remove_event_listener(
         &mut self,
-        _self_rep: Resource<WitElement>,
-        _event_type: String,
-        _handler_id: String,
+        self_rep: Resource<WitElement>,
+        event_type: String,
+        handler_id: String,
     ) {
+        let id: usize = self_rep.rep() as usize;
+        if let Some(Some(node)) = self.elements.get(id) {
+            let target: &EventTarget = node.upcast::<EventTarget>();
+            target.remove_wasm_event_listener(
+                DOMString::from(event_type.clone()),
+                &handler_id,
+            );
+            println!(
+                "[Servo Wasm Host]: Removed native Wasm listener on EventTarget for '{}' with handler_id '{}'",
+                event_type, handler_id
+            );
+        }
     }
 
     fn drop(&mut self, rep: Resource<WitElement>) -> wasmtime::Result<()> {
