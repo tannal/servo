@@ -15,6 +15,7 @@ use servo_base::generic_channel::GenericSharedMemory;
 use vello_cpu::{Pixmap, RenderContext, RenderSettings, Resources};
 use webrender_api::units::DeviceIntSize;
 use webrender_api::{ImageDescriptor, ImageDescriptorFlags, ImageFormat};
+use read_fonts::{FontRef as ReadFontRef, TableProvider};
 
 use crate::error::PdfError;
 use crate::interpreter::{ContentStreamInterpreter, LoadedFont};

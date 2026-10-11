@@ -23,6 +23,7 @@ lopdf = { workspace = true }
 freetype-sys = { workspace = true }
 euclid = {workspace = true }
 paint_api = { workspace = true }
+read-fonts = { workspace = true }
 
 # 2D geometry and vector rasterizer (shared with servo-canvas!)
 kurbo = { workspace = true }

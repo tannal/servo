@@ -8,6 +8,7 @@ use kurbo::{Affine, BezPath, Cap, Join, Point, Rect, Shape, Stroke};
 use lopdf::Object;
 use lopdf::content::{Content, Operation};
 use peniko::{Color, Fill, FontData};
+use read_fonts::{FontRef as ReadFontRef, TableProvider};
 use vello_cpu::{Glyph, RenderContext, Resources};
 
 #[derive(Clone)]
@@ -267,10 +268,15 @@ impl<'a> ContentStreamInterpreter<'a> {
             .or_else(|| self.fonts.values().next());
 
         let Some(font) = font else {
-            println!("No font found at all, skipping string");
             self.advance_text_matrix(text_bytes.len() as f64 * 0.6 * self.current_state.font_size);
             return;
         };
+
+        // Read the font's CMAP table using read-fonts
+        let font_bytes: &[u8] = font.font_data.data.as_ref();
+        let charmap = ReadFontRef::from_index(font_bytes, 0)
+            .ok()
+            .and_then(|rf| rf.cmap().ok());
 
         let font_size = self.current_state.font_size;
         let scale_h = self.current_state.horizontal_scaling / 100.0;
@@ -280,7 +286,15 @@ impl<'a> ContentStreamInterpreter<'a> {
         let mut x_offset = 0.0;
 
         for &byte in text_bytes {
-            let glyph_id = byte as u32;
+            let ch = byte as char;
+
+            // Map character -> real GlyphId!
+            let glyph_id = charmap
+                .as_ref()
+                .and_then(|cm| cm.map_codepoint(ch as u32))
+                .map(|g| g.to_u32())
+                .unwrap_or(byte as u32);
+
             glyphs.push(Glyph {
                 id: glyph_id,
                 x: x_offset as f32,
