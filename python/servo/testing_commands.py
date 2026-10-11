@@ -208,6 +208,7 @@ class MachCommands(CommandBase):
             "servo-net-traits",
             "servo-paint",
             "servo-paint-api",
+            "servo-pdf",
             "servo-pixels",
             "servo-script-traits",
             "servo-script-bindings",
