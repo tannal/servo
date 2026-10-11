@@ -3,6 +3,7 @@
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
 use std::collections::HashMap;
+use std::fs;
 
 use euclid::default::Size2D;
 use kurbo::Affine;
@@ -73,52 +74,37 @@ impl PdfPageRenderer {
         Ok(())
     }
 
+
     fn load_page_fonts(&mut self, doc: &Document, page_id: ObjectId) -> Result<(), PdfError> {
-        let page_dict = doc.get_dictionary(page_id).map_err(PdfError::Parse)?;
-
-        let Ok(resources_obj) = page_dict.get(b"Resources") else {
+        // lopdf returns (Option<&Dictionary>, Vec<ObjectId>)
+        let (resources_opt, _) = doc.get_page_resources(page_id).map_err(PdfError::Parse)?;
+        
+        let Some(resources) = resources_opt else {
             return Ok(());
         };
-
-        let Ok(resources_deref) = doc.dereference(resources_obj) else {
-            return Ok(());
-        };
-
-        let Ok(fonts_dict_obj) = resources_deref.1.as_dict().and_then(|d| d.get(b"Font")) else {
-            return Ok(());
-        };
-
-        let Ok(fonts_deref) = doc.dereference(fonts_dict_obj) else {
-            return Ok(());
-        };
-
-        if let Ok(dict) = fonts_deref.1.as_dict() {
-            for (font_name, font_ref) in dict.iter() {
+    
+        // System fallback font (DejaVuSans or LiberationSans on Linux)
+        let fallback_font_bytes = std::fs::read("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf")
+            .or_else(|_| std::fs::read("/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf"))
+            .or_else(|_| std::fs::read("/usr/share/fonts/TTF/DejaVuSans.ttf"))
+            .ok();
+    
+        if let Ok(fonts_dict) = resources.get(b"Font").and_then(|f| f.as_dict()) {
+            for (font_name, font_ref) in fonts_dict.iter() {
+                let mut loaded_font_data = None;
+    
                 if let Ok(font_deref) = doc.dereference(font_ref) {
                     if let Ok(font_dict) = font_deref.1.as_dict() {
-                        if let Ok(descriptor_obj) = font_dict.get(b"FontDescriptor") {
-                            if let Ok(descriptor_deref) = doc.dereference(descriptor_obj) {
-                                if let Ok(descriptor) = descriptor_deref.1.as_dict() {
-                                    if let Ok(font_file_ref) = descriptor.get(b"FontFile2") {
-                                        if let Ok(font_stream_deref) =
-                                            doc.dereference(font_file_ref)
-                                        {
-                                            if let Ok(font_stream) = font_stream_deref.1.as_stream()
-                                            {
-                                                if let Ok(decompressed) =
-                                                    font_stream.decompressed_content()
-                                                {
-                                                    let blob = Blob::new(std::sync::Arc::new(
-                                                        decompressed,
-                                                    ));
-                                                    let font_data = FontData::new(blob, 0);
-                                                    self.fonts.insert(
-                                                        font_name.clone(),
-                                                        LoadedFont {
-                                                            font_data,
-                                                            default_width: 600.0,
-                                                        },
-                                                    );
+                        if let Ok(desc_ref) = font_dict.get(b"FontDescriptor") {
+                            if let Ok(desc_deref) = doc.dereference(desc_ref) {
+                                if let Ok(desc) = desc_deref.1.as_dict() {
+                                    let font_file_ref = desc.get(b"FontFile2").or_else(|_| desc.get(b"FontFile3"));
+                                    if let Ok(ff_ref) = font_file_ref {
+                                        if let Ok(ff_deref) = doc.dereference(ff_ref) {
+                                            if let Ok(stream) = ff_deref.1.as_stream() {
+                                                if let Ok(decompressed) = stream.decompressed_content() {
+                                                    let blob = Blob::new(std::sync::Arc::new(decompressed));
+                                                    loaded_font_data = Some(FontData::new(blob, 0));
                                                 }
                                             }
                                         }
@@ -128,9 +114,27 @@ impl PdfPageRenderer {
                         }
                     }
                 }
+    
+                // Fallback for unembedded Standard 14 fonts (Helvetica, Times, etc.)
+                if loaded_font_data.is_none() {
+                    if let Some(ref fb_bytes) = fallback_font_bytes {
+                        let blob = Blob::new(std::sync::Arc::new(fb_bytes.clone()));
+                        loaded_font_data = Some(FontData::new(blob, 0));
+                    }
+                }
+    
+                if let Some(font_data) = loaded_font_data {
+                    self.fonts.insert(
+                        font_name.clone(),
+                        LoadedFont {
+                            font_data,
+                            default_width: 600.0,
+                        },
+                    );
+                }
             }
         }
-
+    
         Ok(())
     }
 
