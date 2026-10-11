@@ -272,43 +272,60 @@ impl<'a> ContentStreamInterpreter<'a> {
             return;
         };
 
-        // Read the font's CMAP table using read-fonts
-        let font_bytes: &[u8] = font.font_data.data.as_ref();
-        let charmap = ReadFontRef::from_index(font_bytes, 0)
-            .ok()
-            .and_then(|rf| rf.cmap().ok());
-
         let font_size = self.current_state.font_size;
         let scale_h = self.current_state.horizontal_scaling / 100.0;
         let text_render_matrix = self.current_state.ctm * self.current_state.text_matrix;
 
-        let mut glyphs = Vec::with_capacity(text_bytes.len());
+        let mut glyphs = Vec::new();
         let mut x_offset = 0.0;
 
-        for &byte in text_bytes {
-            let ch = byte as char;
+        // Detect if this is 2-byte encoding (CIDFont / Type0)
+        let is_two_byte = text_bytes.len() >= 2 && text_bytes.len() % 2 == 0 && text_bytes[0] == 0;
 
-            // Map character -> real GlyphId!
-            let glyph_id = charmap
-                .as_ref()
-                .and_then(|cm| cm.map_codepoint(ch as u32))
-                .map(|g| g.to_u32())
-                .unwrap_or(byte as u32);
+        if is_two_byte {
+            // Process as 2-byte big-endian Glyph IDs:
+            for chunk in text_bytes.chunks_exact(2) {
+                let glyph_id = u16::from_be_bytes([chunk[0], chunk[1]]) as u32;
 
-            glyphs.push(Glyph {
-                id: glyph_id,
-                x: x_offset as f32,
-                y: 0.0,
-            });
+                glyphs.push(Glyph {
+                    id: glyph_id,
+                    x: x_offset as f32,
+                    y: 0.0,
+                });
 
-            let glyph_width = (font.default_width / 1000.0) * font_size * scale_h;
-            let spacing = self.current_state.char_spacing
-                + if byte == b' ' {
-                    self.current_state.word_spacing
-                } else {
-                    0.0
-                };
-            x_offset += glyph_width + spacing;
+                let glyph_width = (font.default_width / 1000.0) * font_size * scale_h;
+                x_offset += glyph_width + self.current_state.char_spacing;
+            }
+        } else {
+            // Standard 1-byte ASCII
+            let font_bytes: &[u8] = font.font_data.data.as_ref();
+            let charmap = ReadFontRef::from_index(font_bytes, 0)
+                .ok()
+                .and_then(|rf| rf.cmap().ok());
+
+            for &byte in text_bytes {
+                let ch = byte as char;
+                let glyph_id = charmap
+                    .as_ref()
+                    .and_then(|cm| cm.map_codepoint(ch as u32))
+                    .map(|g| g.to_u32())
+                    .unwrap_or(byte as u32);
+
+                glyphs.push(Glyph {
+                    id: glyph_id,
+                    x: x_offset as f32,
+                    y: 0.0,
+                });
+
+                let glyph_width = (font.default_width / 1000.0) * font_size * scale_h;
+                let spacing = self.current_state.char_spacing
+                    + if byte == b' ' {
+                        self.current_state.word_spacing
+                    } else {
+                        0.0
+                    };
+                x_offset += glyph_width + spacing;
+            }
         }
 
         self.ctx.set_transform(text_render_matrix);

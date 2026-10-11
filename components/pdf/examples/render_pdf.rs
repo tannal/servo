@@ -26,7 +26,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     println!("Loading PDF: {}", input_path);
     let bytes = fs::read(input_path)?;
-    let doc = PdfDocument::from_bytes(&bytes)?;
+    let doc = PdfDocument::new(&bytes)?;
 
     println!("Total pages: {}", doc.page_count());
     let page = doc.page(page_num)?;
