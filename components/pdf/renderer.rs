@@ -3,9 +3,8 @@
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
 use std::collections::HashMap;
-use std::fs;
+use std::sync::Arc;
 
-use euclid::default::Size2D;
 use kurbo::Affine;
 use lopdf::content::Content;
 use lopdf::{Document, ObjectId};
@@ -15,9 +14,9 @@ use servo_base::generic_channel::GenericSharedMemory;
 use vello_cpu::{Pixmap, RenderContext, RenderSettings, Resources};
 use webrender_api::units::DeviceIntSize;
 use webrender_api::{ImageDescriptor, ImageDescriptorFlags, ImageFormat};
-use read_fonts::{FontRef as ReadFontRef, TableProvider};
 
 use crate::error::PdfError;
+use crate::font_provider::{DefaultFontProvider, FontProvider};
 use crate::interpreter::{ContentStreamInterpreter, LoadedFont};
 
 pub struct PdfPageRenderer {
@@ -28,10 +27,22 @@ pub struct PdfPageRenderer {
     resources: Resources,
     pixmap: Pixmap,
     fonts: HashMap<Vec<u8>, LoadedFont>,
+    font_provider: Arc<dyn FontProvider>,
 }
 
 impl PdfPageRenderer {
+    /// Create a renderer with the default system font provider.
     pub fn new(width: u16, height: u16, scale: f64) -> Self {
+        Self::with_font_provider(width, height, scale, Arc::new(DefaultFontProvider))
+    }
+
+    /// Create a renderer with a custom font provider (e.g., from Servo's FontContext).
+    pub fn with_font_provider(
+        width: u16,
+        height: u16,
+        scale: f64,
+        font_provider: Arc<dyn FontProvider>,
+    ) -> Self {
         let settings = RenderSettings {
             num_threads: worker_thread_count(width, height),
             ..Default::default()
@@ -49,6 +60,7 @@ impl PdfPageRenderer {
             resources,
             pixmap,
             fonts: HashMap::new(),
+            font_provider,
         }
     }
 
@@ -75,55 +87,74 @@ impl PdfPageRenderer {
         Ok(())
     }
 
+    /// Access the underlying pixmap (e.g. for CLI file export).
+    pub fn pixmap(&self) -> &Pixmap {
+        &self.pixmap
+    }
+
+    /// Extracts embedded font byte streams (/FontFile2 or /FontFile3),
+    /// checking both direct /FontDescriptor and nested /DescendantFonts (for Type0 CID fonts).
+    fn extract_font_file(doc: &Document, font_dict: &lopdf::Dictionary) -> Option<Vec<u8>> {
+        // 1. Check direct /FontDescriptor
+        let desc_obj = font_dict.get(b"FontDescriptor").ok().or_else(|| {
+            // 2. Or inside /DescendantFonts array for Type0 / CID fonts
+            font_dict
+                .get(b"DescendantFonts")
+                .ok()
+                .and_then(|df| doc.dereference(df).ok())
+                .and_then(|df_deref| df_deref.1.as_array().ok())
+                .and_then(|arr| arr.first())
+                .and_then(|cid_ref| doc.dereference(cid_ref).ok())
+                .and_then(|cid_deref| cid_deref.1.as_dict().ok())
+                .and_then(|cid_dict| cid_dict.get(b"FontDescriptor").ok())
+        })?;
+
+        let desc_deref = doc.dereference(desc_obj).ok()?;
+        let desc = desc_deref.1.as_dict().ok()?;
+
+        let font_file_ref = desc
+            .get(b"FontFile2")
+            .or_else(|_| desc.get(b"FontFile3"))
+            .ok()?;
+        let stream_deref = doc.dereference(font_file_ref).ok()?;
+        let stream = stream_deref.1.as_stream().ok()?;
+
+        stream.decompressed_content().ok()
+    }
 
     fn load_page_fonts(&mut self, doc: &Document, page_id: ObjectId) -> Result<(), PdfError> {
         // lopdf returns (Option<&Dictionary>, Vec<ObjectId>)
         let (resources_opt, _) = doc.get_page_resources(page_id).map_err(PdfError::Parse)?;
-        
+
         let Some(resources) = resources_opt else {
             return Ok(());
         };
-    
-        // System fallback font (DejaVuSans or LiberationSans on Linux)
-        let fallback_font_bytes = std::fs::read("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf")
-            .or_else(|_| std::fs::read("/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf"))
-            .or_else(|_| std::fs::read("/usr/share/fonts/TTF/DejaVuSans.ttf"))
-            .ok();
-    
+
+        // System fallback font for unembedded standard fonts
+        let fallback_font_bytes = self.font_provider.fallback_font();
+
         if let Ok(fonts_dict) = resources.get(b"Font").and_then(|f| f.as_dict()) {
             for (font_name, font_ref) in fonts_dict.iter() {
                 let mut loaded_font_data = None;
-    
+
+                // 1. Try to load embedded font from PDF (TrueType, CFF, or Type0 DescendantFont)
                 if let Ok(font_deref) = doc.dereference(font_ref) {
                     if let Ok(font_dict) = font_deref.1.as_dict() {
-                        if let Ok(desc_ref) = font_dict.get(b"FontDescriptor") {
-                            if let Ok(desc_deref) = doc.dereference(desc_ref) {
-                                if let Ok(desc) = desc_deref.1.as_dict() {
-                                    let font_file_ref = desc.get(b"FontFile2").or_else(|_| desc.get(b"FontFile3"));
-                                    if let Ok(ff_ref) = font_file_ref {
-                                        if let Ok(ff_deref) = doc.dereference(ff_ref) {
-                                            if let Ok(stream) = ff_deref.1.as_stream() {
-                                                if let Ok(decompressed) = stream.decompressed_content() {
-                                                    let blob = Blob::new(std::sync::Arc::new(decompressed));
-                                                    loaded_font_data = Some(FontData::new(blob, 0));
-                                                }
-                                            }
-                                        }
-                                    }
-                                }
-                            }
+                        if let Some(font_bytes) = Self::extract_font_file(doc, font_dict) {
+                            let blob = Blob::new(std::sync::Arc::new(font_bytes));
+                            loaded_font_data = Some(FontData::new(blob, 0));
                         }
                     }
                 }
-    
-                // Fallback for unembedded Standard 14 fonts (Helvetica, Times, etc.)
+
+                // 2. Fallback for unembedded Standard 14 fonts (Helvetica, Times, etc.)
                 if loaded_font_data.is_none() {
                     if let Some(ref fb_bytes) = fallback_font_bytes {
                         let blob = Blob::new(std::sync::Arc::new(fb_bytes.clone()));
                         loaded_font_data = Some(FontData::new(blob, 0));
                     }
                 }
-    
+
                 if let Some(font_data) = loaded_font_data {
                     self.fonts.insert(
                         font_name.clone(),
@@ -135,7 +166,7 @@ impl PdfPageRenderer {
                 }
             }
         }
-    
+
         Ok(())
     }
 
@@ -147,11 +178,10 @@ impl PdfPageRenderer {
             offset: 0,
             flags: ImageDescriptorFlags::empty(),
         };
-    
+
         let shared_memory = GenericSharedMemory::from_bytes(self.pixmap.data_as_u8_slice());
         (descriptor, SerializableImageData::Raw(shared_memory))
     }
-    
 }
 
 fn worker_thread_count(width: u16, height: u16) -> u16 {
