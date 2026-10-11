@@ -5,6 +5,7 @@
 pub mod error;
 pub mod interpreter;
 pub mod renderer;
+pub mod font_provider;
 
 use std::sync::Arc;
 
@@ -15,17 +16,27 @@ pub use renderer::PdfPageRenderer;
 use paint_api::SerializableImageData;
 use webrender_api::ImageDescriptor;
 
+use crate::font_provider::{DefaultFontProvider, FontProvider};
+
 #[derive(Clone)]
 pub struct PdfDocument {
     inner: Arc<lopdf::Document>,
+    font_provider: Arc<dyn FontProvider>,
 }
 
 impl PdfDocument {
-    pub fn from_bytes(bytes: &[u8]) -> Result<Self, PdfError> {
-        let doc = lopdf::Document::load_mem(bytes).map_err(PdfError::Parse)?;
-        Ok(Self {
-            inner: Arc::new(doc),
-        })
+    /// Open with the default fallback font provider
+    pub fn new(data: &[u8]) -> Result<Self, PdfError> {
+        Self::with_font_provider(data, Arc::new(DefaultFontProvider))
+    }
+
+    /// Open with a custom font provider (e.g. Servo's FontContext bridge)
+    pub fn with_font_provider(
+        data: &[u8],
+        font_provider: Arc<dyn FontProvider>,
+    ) -> Result<Self, PdfError> {
+        let doc = lopdf::Document::load_mem(data).map_err(PdfError::Parse)?;
+        Ok(Self { inner: Arc::new(doc), font_provider })
     }
 
     pub fn page_count(&self) -> usize {
