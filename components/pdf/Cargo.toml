@@ -1,0 +1,39 @@
+[package]
+name = "servo-pdf"
+version.workspace = true
+authors.workspace = true
+license.workspace = true
+edition.workspace = true
+publish.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+description.workspace = true
+
+[lib]
+name = "servo_pdf"
+path = "lib.rs"
+
+[dependencies]
+# PDF parsing
+lopdf = { workspace = true }
+
+freetype-sys = { workspace = true }
+euclid = {workspace = true }
+paint_api = { workspace = true }
+
+# 2D geometry and vector rasterizer (shared with servo-canvas!)
+kurbo = { workspace = true }
+peniko = { workspace = true }
+vello_cpu = { workspace = true }
+
+# Shared memory and webrender presentation (shared with servo-canvas!)
+webrender_api = { workspace = true }
+pixels = { workspace = true }
+servo-base = { workspace = true }
+
+# Logging and memory reporting
+log = { workspace = true }
+malloc_size_of = { workspace = true }
+
+[lints]
+workspace = true
