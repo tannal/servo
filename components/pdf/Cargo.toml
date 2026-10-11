@@ -13,6 +13,9 @@ description.workspace = true
 name = "servo_pdf"
 path = "lib.rs"
 
+[dev-dependencies]
+image = { workspace = true }
+
 [dependencies]
 # PDF parsing
 lopdf = { workspace = true }
