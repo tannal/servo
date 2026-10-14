@@ -2,6 +2,7 @@
 resolver = "2"
 members = [
     "components/media/examples",
+    "components/pdf",
     "components/svg",
     "components/xpath",
     "ffi/capi",
@@ -283,6 +284,7 @@ vello = "0.11"
 vello_cpu = { version = "0.2.0", features = ["multithreading"] }
 warp = "0.4.2"
 wasmtime = { version = "49.0.0", default-features = false, features = ["runtime", "component-model", "cranelift", "std", "parallel-compilation"] }
+wasmtime-wasi = { version = "49.0.0", default-features = false, features = ["p2"] }
 web_atoms = "0.3.0"
 webdriver = "0.54.0"
 webpki-roots = "1.0"
@@ -368,6 +370,7 @@ servo-media-player = { version = "=0.7.0", path = "components/media/player" }
 servo-media-streams = { version = "=0.7.0", path = "components/media/streams" }
 servo-media-traits = { version = "=0.7.0", path = "components/media/traits" }
 servo-media-webrtc = { version = "=0.7.0", path = "components/media/webrtc" }
+servo-pdf-host = { path = "components/pdf_host" }
 servo-tracing = { version = "=0.7.0", path = "components/servo_tracing" }
 servo-url = { version = "=0.7.0", path = "components/url" }
 servo-wakelock = { version = "=0.7.0", path = "components/wakelock" }

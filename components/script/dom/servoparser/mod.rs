@@ -45,6 +45,7 @@ use servo_base::id::{PipelineId, WebViewId};
 use servo_config::pref;
 use servo_constellation_traits::TargetSnapshotParams;
 use servo_url::{ImmutableOrigin, MutableOrigin, ServoUrl};
+use servo_wasm::pdf;
 use style::context::QuirksMode as ServoQuirksMode;
 use tendril::stream::LossyDecoder;
 use tendril::{ByteTendril, TendrilSink};
@@ -960,6 +961,10 @@ pub(crate) struct ParserContext {
     is_synthesized_document: bool,
     /// Has a document already been loaded (relevant for checking the resource header)
     has_loaded_document: bool,
+    /// Whether this is a PDF document being accumulated
+    is_pdf_document: bool,
+    /// Accumulated buffer for the full PDF file
+    pdf_bytes: Vec<u8>,
     /// The [`WebViewId`] of the `WebView` associated with this document.
     webview_id: WebViewId,
     /// The [`PipelineId`] of the `Pipeline` associated with this document.
@@ -996,6 +1001,8 @@ impl ParserContext {
             parser: None,
             is_synthesized_document: false,
             has_loaded_document: false,
+            is_pdf_document: false,
+            pdf_bytes: Vec::new(),
             webview_id,
             pipeline_id,
             url,
@@ -1098,12 +1105,12 @@ impl ParserContext {
             let window = document.window();
             let document = Trusted::new(document);
             window
-                .upcast::<GlobalScope>()
-                .task_manager()
-                .networking_task_source()
-                .queue(task!(process_link_headers_task: move || {
-                    process_link_headers(&link_headers, &document.root(), LinkProcessingPhase::Media);
-                }));
+                 .upcast::<GlobalScope>()
+                 .task_manager()
+                 .networking_task_source()
+                 .queue(task!(process_link_headers_task: move || {
+                     process_link_headers(&link_headers, &document.root(), LinkProcessingPhase::Media);
+                 }));
         }
     }
 
@@ -1152,6 +1159,11 @@ impl ParserContext {
             // Return the result of loading a json document given navigationParams and type.
             MediaType::Json => {
                 self.load_json_document(cx, parser.expect("Must have a parser for JSON"))
+            },
+            // Return the result of loading a PDF document given navigationParams and type.
+            MediaType::Pdf => {
+                self.load_pdf_document(cx, parser.expect("Must have a parser for PDF"));
+                return;
             },
             // Return the result of loading a media document given navigationParams and type.
             MediaType::Image | MediaType::AudioVideo => {
@@ -1235,6 +1247,35 @@ impl ParserContext {
         // runs must process link headers given document, navigationParams's response, and "media",
         // after the task has been processed by the HTML parser.
         self.process_link_headers_in_media_phase_with_task(&parser.document);
+    }
+
+    /// Set up a PDF document load. Buffers the initial sniffed bytes and prepares the parser.
+    fn load_pdf_document(&mut self, cx: &mut JSContext, parser: &ServoParser) {
+        self.initialize_document_object(cx, &parser.document);
+        self.is_pdf_document = true;
+        self.pdf_bytes = std::mem::take(&mut self.navigation_params.resource_header);
+        parser.document.set_quirks_mode(ServoQuirksMode::NoQuirks);
+        self.process_link_headers_in_media_phase_with_task(&parser.document);
+    }
+
+    /// Compiles all accumulated PDF bytes to HTML via pdf_host and pushes into DOM parser.
+    fn finish_loading_pdf_document(&mut self, cx: &mut JSContext, parser: &ServoParser) {
+        self.is_synthesized_document = true;
+        let pdf_data = std::mem::take(&mut self.pdf_bytes);
+
+        let html_content = match pdf::render_pdf_to_html(&pdf_data) {
+            Ok(html) => html,
+            Err(e) => format!(
+                "<!DOCTYPE html><html><head><title>PDF Error</title></head><body><h3>Failed to load PDF document</h3><p>{}</p></body></html>",
+                e
+            ),
+        };
+
+        parser.push_string_input_chunk(html_content);
+        parser.last_chunk_received.set(true);
+        if !parser.suspended.get() {
+            parser.parse_sync(cx);
+        }
     }
 
     /// <https://html.spec.whatwg.org/multipage/#navigate-media>
@@ -1480,26 +1521,27 @@ impl ParserContext {
         // navigationParams's request, navigationParams's response, navigationParams's policy container's CSP list,
         // cspNavigationType, and navigable is "Blocked";
         policy_container.csp_list.should_navigation_response_to_navigation_request_be_blocked(
-            cx,
-            window,
-            self.url.clone().into_url(),
-            &origin.immutable().clone().into_url_origin(),
-        )
-        // navigationParams's reserved environment is non-null and the result of
-        // checking a navigation response's adherence to its embedder policy given navigationParams's response,
-        // navigable, and navigationParams's policy container's embedder policy is false; or
-        // TODO
-        // the result of checking a navigation response's adherence to `X-Frame-Options`
-        // given navigationParams's response, navigable, navigationParams's policy container's CSP list,
-        // and navigationParams's origin is false,
-        || !check_a_navigation_response_adherence_to_x_frame_options(
-            window,
-            policy_container.csp_list.as_ref(),
-            &origin,
-            metadata
-                .as_ref()
-                .and_then(|metadata| metadata.headers.as_ref()),
-        ) {
+             cx,
+             window,
+             self.url.clone().into_url(),
+             &origin.immutable().clone().into_url_origin(),
+         )
+         // navigationParams's reserved environment is non-null and the result of
+         // checking a navigation response's adherence to its embedder policy given navigationParams's response,
+         // navigable, and navigationParams's policy container's embedder policy is false; or
+         // TODO
+         // the result of checking a navigation response's adherence to `X-Frame-Options`
+         // given navigationParams's response, navigable, navigationParams's policy container's CSP list,
+         // and navigationParams's origin is false,
+         || !check_a_navigation_response_adherence_to_x_frame_options(
+             window,
+             policy_container.csp_list.as_ref(),
+             &origin,
+             metadata
+                 .as_ref()
+                 .and_then(|metadata| metadata.headers.as_ref()),
+         )
+        {
             // Step 4.1. Set entry's document state's document to the result of creating a document for inline content
             // that doesn't have a DOM, given navigable, null, navTimingType, and userInvolvement.
             // The inline content should indicate to the user the sort of error that occurred.
@@ -1552,11 +1594,11 @@ impl ParserContext {
                     let page = page.replace("${bytes}", encoded_bytes.as_str());
                     page.replace("${secret}", &net_traits::PRIVILEGED_SECRET.to_string())
                 },
-                NetworkError::BlobURLStoreError(reason) |
-                NetworkError::WebsocketConnectionFailure(reason) |
-                NetworkError::HttpError(reason) |
-                NetworkError::ResourceLoadError(reason) |
-                NetworkError::MimeType(reason) => {
+                NetworkError::BlobURLStoreError(reason)
+                | NetworkError::WebsocketConnectionFailure(reason)
+                | NetworkError::HttpError(reason)
+                | NetworkError::ResourceLoadError(reason)
+                | NetworkError::MimeType(reason) => {
                     let page = resources::read_string(Resource::NetErrorHTML);
                     page.replace("${reason}", &reason)
                 },
@@ -1564,30 +1606,30 @@ impl ParserContext {
                     let page = resources::read_string(Resource::CrashHTML);
                     page.replace("${details}", &details)
                 },
-                NetworkError::UnsupportedScheme |
-                NetworkError::CorsGeneral |
-                NetworkError::CrossOriginResponse |
-                NetworkError::CorsCredentials |
-                NetworkError::CorsAllowMethods |
-                NetworkError::CorsAllowHeaders |
-                NetworkError::CorsMethod |
-                NetworkError::CorsAuthorization |
-                NetworkError::CorsHeaders |
-                NetworkError::ConnectionFailure |
-                NetworkError::RedirectError |
-                NetworkError::TooManyRedirects |
-                NetworkError::TooManyInFlightKeepAliveRequests |
-                NetworkError::InvalidMethod |
-                NetworkError::ContentSecurityPolicy |
-                NetworkError::Nosniff |
-                NetworkError::SubresourceIntegrity |
-                NetworkError::MixedContent |
-                NetworkError::CacheError |
-                NetworkError::InvalidPort |
-                NetworkError::LocalDirectoryError |
-                NetworkError::PartialResponseToNonRangeRequestError |
-                NetworkError::ProtocolHandlerSubstitutionError |
-                NetworkError::DecompressionError => {
+                NetworkError::UnsupportedScheme
+                | NetworkError::CorsGeneral
+                | NetworkError::CrossOriginResponse
+                | NetworkError::CorsCredentials
+                | NetworkError::CorsAllowMethods
+                | NetworkError::CorsAllowHeaders
+                | NetworkError::CorsMethod
+                | NetworkError::CorsAuthorization
+                | NetworkError::CorsHeaders
+                | NetworkError::ConnectionFailure
+                | NetworkError::RedirectError
+                | NetworkError::TooManyRedirects
+                | NetworkError::TooManyInFlightKeepAliveRequests
+                | NetworkError::InvalidMethod
+                | NetworkError::ContentSecurityPolicy
+                | NetworkError::Nosniff
+                | NetworkError::SubresourceIntegrity
+                | NetworkError::MixedContent
+                | NetworkError::CacheError
+                | NetworkError::InvalidPort
+                | NetworkError::LocalDirectoryError
+                | NetworkError::PartialResponseToNonRangeRequestError
+                | NetworkError::ProtocolHandlerSubstitutionError
+                | NetworkError::DecompressionError => {
                     let page = resources::read_string(Resource::NetErrorHTML);
                     page.replace("${reason}", &format!("{:?}", error))
                 },
@@ -1616,6 +1658,10 @@ impl ParserContext {
         if parser.aborted.get() {
             return;
         }
+        if self.is_pdf_document {
+            self.pdf_bytes.extend_from_slice(payload.as_ref());
+            return;
+        }
         if !self.has_loaded_document {
             // https://mimesniff.spec.whatwg.org/#read-the-resource-header
             self.navigation_params
@@ -1640,8 +1686,8 @@ impl ParserContext {
         timing: ResourceFetchTiming,
     ) {
         let parser = self.parser.as_ref().map(|parser| parser.root());
-        if parser.as_ref().is_some_and(|parser| parser.aborted.get()) ||
-            self.is_synthesized_document
+        if parser.as_ref().is_some_and(|parser| parser.aborted.get())
+            || self.is_synthesized_document
         {
             return;
         }
@@ -1693,7 +1739,11 @@ impl ParserContext {
             document.set_resource_fetch_timing(full_timing_info);
         }
 
-        if let Some(parser) = parser {
+        if self.is_pdf_document {
+            if let Some(parser) = parser {
+                self.finish_loading_pdf_document(cx, &parser);
+            }
+        } else if let Some(parser) = parser {
             parser.last_chunk_received.set(true);
             if !parser.suspended.get() {
                 parser.parse_sync(cx);
@@ -2127,8 +2177,8 @@ impl TreeSink for Sink {
         let elem = handle.downcast::<Element>().unwrap();
         elem.get_attribute_string_value(&local_name!("encoding"))
             .is_some_and(|value| {
-                value.eq_ignore_ascii_case("text/html") ||
-                    value.eq_ignore_ascii_case("application/xhtml+xml")
+                value.eq_ignore_ascii_case("text/html")
+                    || value.eq_ignore_ascii_case("application/xhtml+xml")
             })
     }
 
@@ -2293,9 +2343,9 @@ fn create_element_for_token(
     // Step 14. If element is a resettable element and not a form-associated custom
     // element, then invoke its reset algorithm. (This initializes the element's value and
     // checkedness based on the element's attributes.)
-    if let Some(html_element) = element.downcast::<HTMLElement>() &&
-        element.is_resettable() &&
-        !html_element.is_form_associated_custom_element()
+    if let Some(html_element) = element.downcast::<HTMLElement>()
+        && element.is_resettable()
+        && !html_element.is_form_associated_custom_element()
     {
         element.reset(cx);
     }
@@ -2445,11 +2495,11 @@ impl Document {
         };
         // Step 6. Let masked be false.
         let mut masked =
-            // Step 7. If referrerPolicy is "no-referrer", then set masked to true.
-            *referrer_policy == ReferrerPolicy::NoReferrer ||
-            // Step 8. Otherwise, if referrerPolicy is "same-origin" and parentDoc's origin
-            // is not same origin with document's origin, then set masked to true.
-            (*referrer_policy == ReferrerPolicy::SameOrigin && !parent_origin.same_origin(&self.origin()));
+             // Step 7. If referrerPolicy is "no-referrer", then set masked to true.
+             *referrer_policy == ReferrerPolicy::NoReferrer ||
+             // Step 8. Otherwise, if referrerPolicy is "same-origin" and parentDoc's origin
+             // is not same origin with document's origin, then set masked to true.
+             (*referrer_policy == ReferrerPolicy::SameOrigin && !parent_origin.same_origin(&self.origin()));
         // Step 9. If masked is true, then append a new opaque origin to output.
         if masked {
             output.push(ImmutableOrigin::new_opaque());

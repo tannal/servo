@@ -27,6 +27,7 @@ pub enum MediaType {
     Font,
     Text,
     Css,
+    Pdf,
 }
 
 #[derive(PartialEq)]
@@ -313,6 +314,12 @@ impl MimeClassifier {
             mt.essence_str() == "text/json"
     }
 
+    pub fn is_pdf(mt: &Mime) -> bool {
+        mt.suffix() == Some(mime::PDF) ||
+            mt.essence_str() == "application/pdf" ||
+            mt.essence_str() == "text/pdf"
+    }
+
     /// <https://mimesniff.spec.whatwg.org/#font-mime-type>
     fn is_font(mt: &Mime) -> bool {
         mt.type_() == mime::FONT ||
@@ -356,7 +363,9 @@ impl MimeClassifier {
             Some(MediaType::Text)
         } else if MimeClassifier::is_css(mime) {
             Some(MediaType::Css)
-        } else {
+        } else if MimeClassifier::is_pdf(mime) {
+            Some(MediaType::Pdf)
+        }else {
             None
         }
     }
