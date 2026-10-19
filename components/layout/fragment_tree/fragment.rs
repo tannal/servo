@@ -198,7 +198,7 @@ impl Fragment {
             | Fragment::Image(..)
             | Fragment::IFrame(..) => {},
             Fragment::Math(fragment) => {
-                fragment.box_fragment.set_containing_block(containing_block)
+                fragment.box_fragment.set_cumulative_content_rect(content_rect)
             },
         }
     }
@@ -312,7 +312,8 @@ impl Fragment {
                 if !fragment
                     .box_fragment
                     .style()
-                    .clone_position()
+                    .get_box()
+                    .position
                     .is_absolutely_positioned()
                 {
                     Some(fragment.box_fragment.margin_rect())
@@ -354,13 +355,13 @@ impl Fragment {
             Fragment::Math(fragment) => Some(match area {
                 BoxAreaType::Content => fragment
                     .box_fragment
-                    .cumulative_content_box_rect(containing_block_computation),
+                    .cumulative_content_box_rect(cumulative_content_rect_calculation),
                 BoxAreaType::Padding => fragment
                     .box_fragment
-                    .cumulative_padding_box_rect(containing_block_computation),
+                    .cumulative_padding_box_rect(cumulative_content_rect_calculation),
                 BoxAreaType::Border => fragment
                     .box_fragment
-                    .cumulative_border_box_rect(containing_block_computation),
+                    .cumulative_border_box_rect(cumulative_content_rect_calculation),
             }),
         }
     }

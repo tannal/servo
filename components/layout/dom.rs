@@ -322,6 +322,10 @@ impl LayoutBox {
                 TableLevelBox::Cell(cell) => callback(&cell.borrow().context),
                 TableLevelBox::TrackGroup(..) | TableLevelBox::Track(..) => None,
             },
+            LayoutBox::MathLevel(math_level_box) => match &*math_level_box.borrow() {
+                // If any child is atomic / same context:
+                _ => None,
+            },
             LayoutBox::TaffyItemBox(taffy_item_box) => {
                 match &taffy_item_box.borrow().taffy_level_box {
                     TaffyItemBoxInner::InFlowBox(independent_formatting_context) => {

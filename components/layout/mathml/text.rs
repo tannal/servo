@@ -5,7 +5,7 @@
 use std::sync::Arc;
 
 use app_units::Au;
-use fonts::{FontRef, ShapedText, ShapedTextSlice, ShapedTextSliceType, ShapingOptions};
+use fonts::{FontRef, ShapedText, ShapedTextSlice, ShapingOptions};
 use layout_api::{LayoutElement, LayoutNode};
 use malloc_size_of_derive::MallocSizeOf;
 use script::layout_dom::ServoLayoutNode;
@@ -14,7 +14,7 @@ use servo_base::text::Utf32CodeUnits;
 use style::Zero;
 use style::context::SharedStyleContext;
 use style::dom::NodeInfo;
-use style::logical_geometry::Direction;
+use style::logical_geometry::{Direction, LogicalAxis};
 use style::properties::ComputedValues;
 use web_atoms::{local_name, ns};
 
@@ -60,7 +60,7 @@ impl MathTextBlock {
 
         let lazy_block_size = LazySize::new(
             &sizes,
-            Direction::Block,
+            LogicalAxis::Block,
             Size::FitContent,
             Au::zero,
             None,

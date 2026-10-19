@@ -63,7 +63,7 @@ use crate::fragment_tree::{
     BackgroundMode, BaseFragment, BoxFragment, BoxFragmentWithStyle,
     CumulativeContentRectCalculation, Fragment, FragmentFlags, FragmentStatus, FragmentTree,
     IFrameFragment, ImageFragment, PositioningFragment, SpecificLayoutInfo, Tag, TextFragment,
-    ContainingBlockCalculation, Fragment, FragmentFlags, FragmentStatus, FragmentTree, IFrameFragment, ImageFragment, MathFragment, MathFragmentKind, PositioningFragment, SpecificLayoutInfo, Tag, TextFragment,
+    MathFragment, MathFragmentKind,
 };
 use crate::geom::{
     LengthPercentageOrAuto, PhysicalPoint, PhysicalRect, PhysicalSides, PhysicalSize,
@@ -899,7 +899,7 @@ impl PaintTraversalHandler for DisplayListBuilder<'_> {
             MathFragmentKind::Fraction { bar_rect: Some(bar_rect) } => {
                 let absolute_rect = bar_rect.translate(fragment_origin.to_vector());
                 let common = self.common_properties(state, absolute_rect.to_webrender(), &style);
-                let color = style.clone_color();
+                let color = *style.get_color();
                 self.wr().push_rect(
                     &common,
                     absolute_rect.to_webrender(),
@@ -909,7 +909,7 @@ impl PaintTraversalHandler for DisplayListBuilder<'_> {
             MathFragmentKind::Radical { rule_rect: Some(rule_rect) } => {
                 let absolute_rect = rule_rect.translate(fragment_origin.to_vector());
                 let common = self.common_properties(state, absolute_rect.to_webrender(), &style);
-                let color = style.clone_color();
+                let color = *style.get_color();
     
                 self.wr().push_rect(
                     &common,
