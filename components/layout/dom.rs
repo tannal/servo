@@ -307,6 +307,9 @@ impl LayoutBox {
                 TableLevelBox::Cell(cell) => callback(&cell.borrow().context),
                 TableLevelBox::TrackGroup(..) | TableLevelBox::Track(..) => None,
             },
+            LayoutBox::WasmLevel(_) => {
+                None
+            },
             LayoutBox::TaffyItemBox(taffy_item_box) => {
                 match &taffy_item_box.borrow().taffy_level_box {
                     TaffyItemBoxInner::InFlowBox(independent_formatting_context) => {

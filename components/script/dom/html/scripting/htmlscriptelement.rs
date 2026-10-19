@@ -402,7 +402,7 @@ impl FetchResponseListener for ClassicContext {
 
         let elem = self.elem.root();
 
-        if elem.get_script_type() == Some(ScriptType::WasmComponent) {
+        if elem.script_type() == Some(ScriptType::WasmComponent) {
             let wasm_bytes = self.data.to_vec();
             println!(
                 "[Servo Wasm Debug]: Downloaded Wasm bytes = {}",
@@ -1203,17 +1203,15 @@ impl HTMLScriptElement {
                 let is_a_javascript_mime = SCRIPT_JS_MIMES.iter().any(|mime| {
                     type_attr_value
                         .trim_matches(HTML_SPACE_CHARACTERS)
-                if ty
+                        .eq_ignore_ascii_case(mime)
+                });
+
+                if type_attr_value
                     .trim_matches(HTML_SPACE_CHARACTERS)
                     .eq_ignore_ascii_case("wasm-component")
                 {
                     return Some(ScriptType::WasmComponent);
                 }
-
-                if SCRIPT_JS_MIMES.iter().any(|mime| {
-                    ty.trim_matches(HTML_SPACE_CHARACTERS)
-                        .eq_ignore_ascii_case(mime)
-                });
 
                 is_a_javascript_mime.then_some(ScriptType::Classic)
             },

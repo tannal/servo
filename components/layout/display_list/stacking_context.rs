@@ -610,7 +610,7 @@ impl Fragment {
             Fragment::Math(math_fragment) => {
                 let box_fragment = &math_fragment.box_fragment;
                 if mode == StackingContextBuildMode::SkipHoisted &&
-                    box_fragment.style().clone_position().is_absolutely_positioned()
+                    box_fragment.style().get_box().position.is_absolutely_positioned()
                 {
                     return;
                 }
@@ -622,6 +622,8 @@ impl Fragment {
                     containing_block_info,
                     stacking_context,
                     text_decorations,
+                    container_timing_roots,
+                    participates_in_3d_rendering_context
                 );
             },
             Fragment::LayoutRoot(..) => {

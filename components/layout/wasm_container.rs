@@ -312,7 +312,7 @@ impl WasmContainer {
     }
 
     fn resolve_font_metrics(layout_context: &LayoutContext, style: &ComputedValues) -> (Au, Au) {
-        let font_size: Au = style.clone_font_size().computed_size().into();
+        let font_size: Au = style.clone_font().font_size.computed_size().into();
         let font = layout_context.font_context.font_group(style.clone_font());
         let math_axis = font
             .first(&layout_context.font_context)
