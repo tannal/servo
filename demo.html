@@ -1,0 +1,536 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>MathML Core Layout & Box Model Visual Reference</title>
+  <style>
+    :root {
+      --baseline-color: #e53935;       /* Red: Alphabetic Baseline */
+      --math-axis-color: #ff9800;      /* Amber / Orange: Math Axis */
+      --content-box-bg: rgba(66, 165, 245, 0.15); /* Light blue: Content */
+      --ink-box-bg: rgba(76, 175, 80, 0.2);       /* Light green: Ink / Children */
+      --margin-box-border: #ab47bc;    /* Purple dotted: Margin / Container */
+      --accent-color: #00897b;
+    }
+
+    body {
+      font-family: system-ui, -apple-system, sans-serif;
+      margin: 2rem;
+      background: #fafafa;
+      color: #212121;
+      line-height: 1.5;
+    }
+
+    h1, h2, h3 {
+      color: #0d47a1;
+      border-bottom: 2px solid #e0e0e0;
+      padding-bottom: 0.3rem;
+    }
+
+    .legend {
+      display: flex;
+      gap: 1.5rem;
+      background: #fff;
+      padding: 1rem 1.5rem;
+      border-radius: 8px;
+      box-shadow: 0 2px 6px rgba(0,0,0,0.08);
+      margin-bottom: 2rem;
+      position: sticky;
+      top: 1rem;
+      z-index: 100;
+      align-items: center;
+      flex-wrap: wrap;
+    }
+
+    .legend-item {
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+      font-size: 0.9rem;
+      font-weight: 600;
+    }
+
+    .legend-line {
+      width: 32px;
+      height: 3px;
+      display: inline-block;
+    }
+    .legend-baseline { background: var(--baseline-color); }
+    .legend-axis { background: var(--math-axis-color); height: 2px; border-top: 2px dashed var(--math-axis-color); }
+    .legend-box { width: 18px; height: 18px; border: 1.5px solid; border-radius: 3px; }
+
+    /* Playground Cards */
+    .card {
+      background: #fff;
+      border-radius: 8px;
+      padding: 1.5rem;
+      margin-bottom: 2.5rem;
+      box-shadow: 0 2px 8px rgba(0,0,0,0.06);
+      border-left: 5px solid #1976d2;
+    }
+
+    .card h3 {
+      margin-top: 0;
+      border-bottom: none;
+      font-size: 1.25rem;
+    }
+
+    .spec-quote {
+      background: #f5f5f5;
+      border-left: 3px solid #78909c;
+      padding: 0.6rem 1rem;
+      font-size: 0.88rem;
+      color: #455a64;
+      margin-bottom: 1.2rem;
+      font-family: monospace;
+    }
+
+    /* Visualization Container with Real Overlay Lines */
+    .math-canvas {
+      position: relative;
+      background: #ffffff;
+      border: 1px solid #cfd8dc;
+      border-radius: 6px;
+      padding: 3.5rem 2rem;
+      margin: 1.5rem 0;
+      display: flex;
+      align-items: center;
+      overflow-x: auto;
+    }
+
+    math {
+      font-size: 42px;
+      font-family: "Latin Modern Math", "STIX Two Math", "Cambria Math", serif;
+      z-index: 2;
+    }
+
+    /* Real dynamic visual lines placed across formulas */
+    .guide-line {
+      position: absolute;
+      left: 0;
+      right: 0;
+      pointer-events: none;
+      z-index: 10;
+    }
+
+    .guide-baseline {
+      border-bottom: 2px solid var(--baseline-color);
+    }
+    .guide-baseline::after {
+      content: "Alphabetic Baseline (y = 0)";
+      position: absolute;
+      right: 10px;
+      bottom: 2px;
+      font-size: 11px;
+      color: var(--baseline-color);
+      font-weight: bold;
+      background: rgba(255,255,255,0.85);
+      padding: 1px 4px;
+    }
+
+    .guide-axis {
+      border-bottom: 2px dashed var(--math-axis-color);
+    }
+    .guide-axis::after {
+      content: "Math Axis (AxisHeight)";
+      position: absolute;
+      right: 10px;
+      bottom: 2px;
+      font-size: 11px;
+      color: var(--math-axis-color);
+      font-weight: bold;
+      background: rgba(255,255,255,0.85);
+      padding: 1px 4px;
+    }
+
+    /* MathML Component Box Highlighting */
+    .highlight-boxes mrow {
+      outline: 1px dashed #4caf50;
+      background: rgba(76, 175, 80, 0.05);
+    }
+    .highlight-boxes mfrac {
+      outline: 1.5px solid #2196f3;
+      background: rgba(33, 150, 243, 0.05);
+    }
+    .highlight-boxes mfrac > :first-child {
+      outline: 1px dotted #e91e63;
+      background: rgba(233, 30, 99, 0.08);
+    }
+    .highlight-boxes mfrac > :nth-child(2) {
+      outline: 1px dotted #9c27b0;
+      background: rgba(156, 39, 176, 0.08);
+    }
+    .highlight-boxes mo {
+      background: rgba(255, 152, 0, 0.12);
+    }
+
+    .desc-table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 0.85rem;
+      margin-top: 1rem;
+    }
+    .desc-table th, .desc-table td {
+      border: 1px solid #e0e0e0;
+      padding: 6px 10px;
+      text-align: left;
+    }
+    .desc-table th { background: #eceff1; }
+  </style>
+</head>
+<body>
+
+  <h1>MathML Core Specification & Box Model Layout Demo</h1>
+  <p>Visualizing the layout metrics, formatting contexts, and double-axis alignment (<strong>Alphabetic Baseline</strong> vs. <strong>Math Axis</strong>) specified in W3C MathML Core §3.3 & §3.4.</p>
+
+  <!-- Sticky Legend -->
+  <div class="legend">
+    <div class="legend-item">
+      <span class="legend-line legend-baseline"></span>
+      <span>Alphabetic Baseline (Universal Alignment Anchor)</span>
+    </div>
+    <div class="legend-item">
+      <span class="legend-line legend-axis"></span>
+      <span>Math Axis (Center of Operators & Fraction Bars)</span>
+    </div>
+    <div class="legend-item">
+      <span class="legend-box" style="border-color:#2196f3; background:rgba(33, 150, 243, 0.1);"></span>
+      <span>&lt;mfrac&gt; Box</span>
+    </div>
+    <div class="legend-item">
+      <span class="legend-box" style="border-color:#e91e63; background:rgba(233, 30, 99, 0.1);"></span>
+      <span>Numerator</span>
+    </div>
+    <div class="legend-item">
+      <span class="legend-box" style="border-color:#9c27b0; background:rgba(156, 39, 176, 0.1);"></span>
+      <span>Denominator</span>
+    </div>
+  </div>
+
+  <!-- SECTION 1: mrow Alignment & Operator Centering -->
+  <div class="card">
+    <h3>1. &lt;mrow&gt; Baseline vs. Math Axis Alignment (Figure 10 & 11)</h3>
+    <div class="spec-quote">
+      "The child boxes are put in a row one after the other with all their alphabetic baselines aligned... fraction bars or symmetric stretchy operators will also be aligned along the math axis."
+    </div>
+
+    <div class="math-canvas highlight-boxes" id="canvas-row">
+      <math display="block">
+        <mrow>
+          <mi>x</mi>
+          <mo>+</mo>
+          <mfrac>
+            <mrow><mi>a</mi><mo>+</mo><mn>1</mn></mrow>
+            <mi>b</mi>
+          </mfrac>
+          <mo>=</mo>
+          <mi>y</mi>
+          <mo>−</mo>
+          <mn>5</mn>
+        </mrow>
+      </math>
+    </div>
+
+    <table class="desc-table">
+      <tr>
+        <th>Observation</th>
+        <th>Layout Invariant</th>
+      </tr>
+      <tr>
+        <td>Variables ($x, y$) & digits sit exactly on the solid red line.</td>
+        <td><strong>Alphabetic Baseline Alignment</strong> across all child boxes in the <code>&lt;mrow&gt;</code>.</td>
+      </tr>
+      <tr>
+        <td>The fraction bar, $+$, $-$, and $=$ centers lie on the dashed orange line.</td>
+        <td><strong>Math Axis Alignment</strong>: Centered at distance <code>AxisHeight</code> above the baseline.</td>
+      </tr>
+    </table>
+  </div>
+
+  <!-- SECTION 2: Fraction Variants & Linethickness (Figure 12 & 13) -->
+  <div class="card">
+    <h3>2. &lt;mfrac&gt; Non-Zero vs. Zero Linethickness & DisplayStyle (Figure 12 & 13)</h3>
+    <div class="spec-quote">
+      "NumeratorShift & DenominatorShift ensure the fraction bar is at AxisHeight... If linethickness is zero, StackTopShiftUp and StackBottomShiftDown are used."
+    </div>
+
+    <div class="math-canvas highlight-boxes" id="canvas-frac">
+      <math display="block">
+        <mrow>
+          <mn>0</mn>
+          <mo>+</mo>
+          <!-- 1. Display style -->
+          <mfrac displaystyle="true">
+            <mn>1</mn>
+            <mn>2</mn>
+          </mfrac>
+          <mo>−</mo>
+          <!-- 2. Compact / Text style -->
+          <mfrac>
+            <mn>1</mn>
+            <mn>2</mn>
+          </mfrac>
+          <mo>+</mo>
+          <!-- 3. Heavy rule -->
+          <mfrac linethickness="4px">
+            <mn>1</mn>
+            <mn>234</mn>
+          </mfrac>
+          <mo>−</mo>
+          <!-- 4. Zero thickness stack / binomial -->
+          <mrow>
+            <mo>(</mo>
+            <mfrac linethickness="0">
+              <mi>n</mi>
+              <mi>k</mi>
+            </mfrac>
+            <mo>)</mo>
+          </mrow>
+        </mrow>
+      </math>
+    </div>
+
+    <table class="desc-table">
+      <tr>
+        <th>Fraction Variant</th>
+        <th>Layout Behavior</th>
+      </tr>
+      <tr>
+        <td><code>displaystyle="true"</code></td>
+        <td>Uses <code>FractionNumDisplayStyleGapMin</code>; numerator & denominator maintain larger script font size.</td>
+      </tr>
+      <tr>
+        <td>Compact (Default)</td>
+        <td>Uses compact shift values; child elements automatically receive <code>math-depth: auto-add; math-style: compact;</code></td>
+      </tr>
+      <tr>
+        <td><code>linethickness="4px"</code></td>
+        <td>Rule block size expands; gaps are measured from the edge of the thicker bar.</td>
+      </tr>
+      <tr>
+        <td><code>linethickness="0"</code> (Binomial)</td>
+        <td>Fraction bar omitted entirely; <code>StackGapMin</code> ensures numbers do not collide. Fences stretch around it.</td>
+      </tr>
+    </table>
+  </div>
+
+  <!-- SECTION 3: Stretchy Operators & Fences -->
+  <div class="card">
+    <h3>3. Multi-Pass Symmetric Stretchy Operators (Figure 11)</h3>
+    <div class="spec-quote">
+      "LToStretch operators stretch symmetrically around the Math Axis: Target Ascent = AxisHeight + HalfHeight, Target Descent = HalfHeight - AxisHeight."
+    </div>
+
+    <div class="math-canvas highlight-boxes" id="canvas-stretch">
+      <math display="block">
+        <mrow>
+          <mo>(</mo>
+          <mfrac>
+            <mrow>
+              <mn>1</mn>
+              <mo>+</mo>
+              <mfrac>
+                <mn>2</mn>
+                <mn>3</mn>
+              </mfrac>
+            </mrow>
+            <mn>4</mn>
+          </mfrac>
+          <mo>)</mo>
+          <mo>=</mo>
+          <mo>[</mo>
+          <mfrac>
+            <mi>x</mi>
+            <mi>y</mi>
+          </mfrac>
+          <mo>]</mo>
+        </mrow>
+      </math>
+    </div>
+
+    <p>Notice how the left and right parentheses <code>(</code> <code>)</code> stretch tall to enclose the multi-level nested fraction, but remain <strong>centered on the Math Axis</strong>, not skewed towards the larger numerator.</p>
+  </div>
+
+  <!-- SECTION 4: Subscripts and Superscripts (Figure 17, 18, 19) -->
+  <div class="card">
+    <h3>4. Scripts: &lt;msub&gt;, &lt;msup&gt;, &lt;msubsup&gt; & Italic Correction</h3>
+    <div class="spec-quote">
+      "The msub base's alphabetic baseline matches the container baseline. Subscript is shifted down by SubShift; Superscript is shifted up by SuperShift."
+    </div>
+
+    <div class="math-canvas highlight-boxes" id="canvas-script">
+      <math display="block">
+        <mrow>
+          <msub>
+            <mi>X</mi>
+            <mn>1</mn>
+          </msub>
+          <mo>+</mo>
+          <msup>
+            <mi>X</mi>
+            <mn>2</mn>
+          </msup>
+          <mo>+</mo>
+          <msubsup>
+            <mi>X</mi>
+            <mn>1</mn>
+            <mn>2</mn>
+          </msubsup>
+          <mo>+</mo>
+          <!-- Slanted base with Italic Correction -->
+          <msubsup>
+            <mo>∫</mo>
+            <mn>0</mn>
+            <mo>∞</mo>
+          </msubsup>
+          <mi>f</mi>
+          <mo stretchy="false">(</mo>
+          <mi>x</mi>
+          <mo stretchy="false">)</mo>
+          <mi>d</mi>
+          <mi>x</mi>
+        </mrow>
+      </math>
+    </div>
+
+    <table class="desc-table">
+      <tr>
+        <th>Script Component</th>
+        <th>Alignment & Kerning Invariant</th>
+      </tr>
+      <tr>
+        <td><code>&lt;msubsup&gt;</code> Gap</td>
+        <td><code>SubSuperGapMin</code> prevents the subscript and superscript from colliding vertically.</td>
+      </tr>
+      <tr>
+        <td>Italic Correction</td>
+        <td>On slanted symbols like $\int$, the superscript is shifted horizontally to the right by <code>ItalicCorrection</code> to clear the top overhang.</td>
+      </tr>
+    </table>
+  </div>
+
+  <!-- SECTION 5: mpadded Spatial Tuning (Figure 16) -->
+  <div class="card">
+    <h3>5. &lt;mpadded&gt; Arbitrary Metric Overrides (Figure 16)</h3>
+    <div class="spec-quote">
+      "The mpadded element generates an anonymous &lt;mrow&gt; box with size and baseline modified according to width, height, depth, lspace, and voffset."
+    </div>
+
+    <div class="math-canvas highlight-boxes" id="canvas-padded">
+      <math display="block">
+        <mrow>
+          <mn>1</mn>
+          <mo>+</mo>
+          <mpadded style="background: rgba(33, 150, 243, 0.2); outline: 1px solid #1976d2;">
+            <mfrac>
+              <mi>a</mi>
+              <mi>b</mi>
+            </mfrac>
+          </mpadded>
+          <mo>+</mo>
+          <mpadded lspace="1.5em" voffset="-0.6em" height="1.8em" depth="1.8em" width="5em"
+                   style="background: rgba(255, 193, 7, 0.3); outline: 1px dashed #f57f17;">
+            <mfrac>
+              <mi>a</mi>
+              <mi>b</mi>
+            </mfrac>
+          </mpadded>
+          <mo>+</mo>
+          <mn>9</mn>
+        </mrow>
+      </math>
+    </div>
+    <p>The amber <code>&lt;mpadded&gt;</code> box has explicitly overridden <code>width</code>, expanded <code>height/depth</code>, shifted the fraction horizontally via <code>lspace</code>, and dropped the baseline using negative <code>voffset</code>.</p>
+  </div>
+
+  <!-- SECTION 6: Matrices & Tabular Layout (mtable) -->
+  <div class="card">
+    <h3>6. Tabular Math &lt;mtable&gt; (CSS Table Integration)</h3>
+    <div class="spec-quote">
+      "The mtable element is laid out as an inline-table. The center of the table is aligned with the math axis."
+    </div>
+
+    <div class="math-canvas highlight-boxes" id="canvas-table">
+      <math display="block">
+        <mrow>
+          <mfrac>
+            <mi>A</mi>
+            <mn>2</mn>
+          </mfrac>
+          <mo>=</mo>
+          <mo>(</mo>
+          <mtable style="border-spacing: 0.4em 0.2em;">
+            <mtr>
+              <mtd><mn>1</mn></mtd>
+              <mtd><mn>0</mn></mtd>
+              <mtd><mn>0</mn></mtd>
+            </mtr>
+            <mtr>
+              <mtd><mn>0</mn></mtd>
+              <mtd><mn>1</mn></mtd>
+              <mtd><mn>0</mn></mtd>
+            </mtr>
+            <mtr>
+              <mtd><mn>0</mn></mtd>
+              <mtd><mn>0</mn></mtd>
+              <mtd><mn>1</mn></mtd>
+            </mtr>
+          </mtable>
+          <mo>)</mo>
+        </mrow>
+      </math>
+    </div>
+    <p>Notice that the entire 3x3 identity matrix's vertical center aligns with the Math Axis (matching the fraction bar and the equals sign).</p>
+  </div>
+
+  <!-- Dynamic Guide Lines Overlay Script -->
+  <script>
+    // Calculate and draw real guidelines over each canvas
+    function renderGuidelines() {
+      const canvases = document.querySelectorAll('.math-canvas');
+
+      canvases.forEach(canvas => {
+        // Clear previous lines
+        canvas.querySelectorAll('.guide-line').forEach(l => l.remove());
+
+        const math = canvas.querySelector('math');
+        if (!math) return;
+
+        // Find reference characters for baseline & axis
+        // We use '+' or '=' for axis, and standard letters/numbers for baseline
+        const plusOrEq = Array.from(canvas.querySelectorAll('mo')).find(el => ['+','=','−'].includes(el.textContent.trim()));
+        const normalChar = Array.from(canvas.querySelectorAll('mn, mi')).find(el => el.textContent.trim().length > 0);
+
+        const canvasRect = canvas.getBoundingClientRect();
+
+        if (normalChar) {
+          const charRect = normalChar.getBoundingClientRect();
+          // The alphabetic baseline roughly sits at bottom - descent (~20% from bottom of char box)
+          const baselineY = (charRect.bottom - canvasRect.top) - (charRect.height * 0.18);
+
+          const baselineEl = document.createElement('div');
+          baselineEl.className = 'guide-line guide-baseline';
+          baselineEl.style.top = `${baselineY}px`;
+          canvas.appendChild(baselineEl);
+
+          if (plusOrEq) {
+            const opRect = plusOrEq.getBoundingClientRect();
+            // Math axis runs directly through the vertical center of '+' or '='
+            const axisY = (opRect.top + opRect.bottom) / 2 - canvasRect.top;
+
+            const axisEl = document.createElement('div');
+            axisEl.className = 'guide-line guide-axis';
+            axisEl.style.top = `${axisY}px`;
+            canvas.appendChild(axisEl);
+          }
+        }
+      });
+    }
+
+    // Render after web fonts load
+    window.addEventListener('load', renderGuidelines);
+    window.addEventListener('resize', renderGuidelines);
+  </script>
+
+</body>
+</html>
