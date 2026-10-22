@@ -2,10 +2,12 @@ use app_units::Au;
 use malloc_size_of_derive::MallocSizeOf;
 use script::layout_dom::ServoLayoutNode;
 use servo_arc::Arc as ServoArc;
+use style::computed_values::position::T;
+use style::logical_geometry::LogicalAxis;
+use style::values::generics::position::Position;
 use std::sync::Arc;
 use style::context::SharedStyleContext;
 use style::properties::ComputedValues;
-use style::values::computed::Context;
 
 use super::{MathLevelBox, MathRowBlock};
 use crate::cell::ArcRefCell;
@@ -22,7 +24,7 @@ use crate::geom::{
 use crate::layout_box_base::LayoutBoxBase;
 use crate::mathml::{MathLayoutOutput, math_axis_height, translate_fragments};
 use crate::positioned::PositioningContext;
-use crate::sizing::{ContentSizes, InlineContentSizesResult, SizeConstraint};
+use crate::sizing::{ContentSizes, InlineContentSizesResult, Size, SizeConstraint};
 use crate::style_ext::LayoutStyle;
 use crate::{ConstraintSpace, ContainingBlock, ContainingBlockSize};
 use style::Zero;
@@ -49,30 +51,48 @@ pub(crate) enum FractionAlignment {
 }
 impl MathFractionBlock {
     pub(crate) fn construct(
-        _context: &LayoutContext,
+        context: &LayoutContext,
         node_and_style_info: &NodeAndStyleInfo,
-        mut children: Vec<ArcRefCell<MathLevelBox>>,
+        children: Vec<ArcRefCell<MathLevelBox>>,
     ) -> Self {
-        let num_align = FractionAlignment::Center;
-        let denom_align = FractionAlignment::Center;
-        let numerator = if !children.is_empty() {
-            Some(children.remove(0))
+        // Only in-flow children count as numerator / denominator
+        let mut in_flow_children: Vec<ArcRefCell<MathLevelBox>> = Vec::new();
+        let mut out_of_flow: Vec<ArcRefCell<MathLevelBox>> = Vec::new();
+        for child in children {
+            let is_in_flow = child.borrow().with_base(|b| {
+                !b.style.get_box().position.is_absolutely_positioned()
+            });
+            if is_in_flow {
+                in_flow_children.push(child);
+            } else {
+                out_of_flow.push(child);
+            }
+        }
+        if in_flow_children.len() == 2 {
+            let denominator = Some(in_flow_children.pop().unwrap());
+            let numerator = Some(in_flow_children.pop().unwrap());
+            let inner_row = MathRowBlock::construct(node_and_style_info, out_of_flow);
+            MathFractionBlock {
+                inner_row,
+                numerator,
+                denominator,
+                linethickness: None,
+                num_align: FractionAlignment::Center,
+                denom_align: FractionAlignment::Center,
+            }
         } else {
-            None
-        };
-        let denominator = if !children.is_empty() {
-            Some(children.remove(0))
-        } else {
-            None
-        };
-        let inner_row = MathRowBlock::construct(node_and_style_info, Vec::new());
-        MathFractionBlock {
-            inner_row,
-            numerator,
-            denominator,
-            linethickness: None,
-            num_align,
-            denom_align,
+            // Fallback: lay out all children as an mrow
+            let mut all_children = in_flow_children;
+            all_children.extend(out_of_flow);
+            let inner_row = MathRowBlock::construct(node_and_style_info, all_children);
+            MathFractionBlock {
+                inner_row,
+                numerator: None,
+                denominator: None,
+                linethickness: None,
+                num_align: FractionAlignment::Center,
+                denom_align: FractionAlignment::Center,
+            }
         }
     }
     pub(crate) fn base(&self) -> &LayoutBoxBase {
@@ -203,46 +223,43 @@ impl MathFractionBlock {
         let style = &self.base().style;
         let writing_mode = style.writing_mode;
         let layout_style = LayoutStyle::Default(style);
-        let pbm = layout_style
-            .content_box_sizes_and_padding_border_margin(&containing_block.into())
-            .pbm;
+        let content_box_sizes_and_pbm = layout_style
+            .content_box_sizes_and_padding_border_margin(&containing_block.into());
+        let pbm = content_box_sizes_and_pbm.pbm;
         let physical_padding = pbm.padding.to_physical(writing_mode);
+        let physical_border = pbm.border.to_physical(writing_mode);
         let num_box = self.numerator.as_ref().unwrap();
         let denom_box = self.denominator.as_ref().unwrap();
-        // 1. Measure intrinsic inline sizes
-        let constraint_space = ConstraintSpace::new(SizeConstraint::default(), style, None);
-        let num_inline_width = num_box
-            .borrow()
-            .inline_content_sizes(layout_context, &constraint_space)
-            .sizes
-            .max_content;
-        let denom_inline_width = denom_box
-            .borrow()
-            .inline_content_sizes(layout_context, &constraint_space)
-            .sizes
-            .max_content;
-        let num_containing_block = ContainingBlock {
+        let unconstrained_cb = ContainingBlock {
             size: ContainingBlockSize {
-                inline: num_inline_width,
+                inline: containing_block.size.inline,
                 block: containing_block.size.block,
             },
             style: containing_block.style,
         };
-        let denom_containing_block = ContainingBlock {
-            size: ContainingBlockSize {
-                inline: denom_inline_width,
-                block: containing_block.size.block,
-            },
-            style: containing_block.style,
-        };
-        // 2. Layout children in O(1) without measure()
         let mut num_out = num_box
             .borrow()
-            .layout(layout_context, positioning_context, &num_containing_block, None);
+            .layout(layout_context, positioning_context, &unconstrained_cb, _target_size);
         let mut denom_out = denom_box
             .borrow()
-            .layout(layout_context, positioning_context, &denom_containing_block, None);
-        let content_width = num_out.inline_size.max(denom_out.inline_size);
+            .layout(layout_context, positioning_context, &unconstrained_cb, None);
+        let padding_border_inline = physical_padding.left + physical_padding.right
+            + physical_border.left + physical_border.right;
+        let available_inline_size =
+            Au::zero().max(containing_block.size.inline - padding_border_inline);
+        // Content inline size: resolve CSS width, min-width, and max-width against children_width
+        let children_width = num_out.inline_size.max(denom_out.inline_size);
+        let content_width = content_box_sizes_and_pbm
+            .content_box_sizes
+            .inline
+            .resolve(
+                LogicalAxis::Inline,
+                Size::FitContent,
+                || containing_block.size.inline,
+                Some(available_inline_size),
+                || children_width.into(),
+                false,
+            );
         let thickness = self.line_thickness();
         let font_group = layout_context.font_context.font_group(style.clone_font());
         let font = font_group.first(&layout_context.font_context);
@@ -255,22 +272,26 @@ impl MathFractionBlock {
         // Typographic bounds relative to the fraction baseline
         let fraction_ascent = params.numerator_shift_up + num_out.ascent;
         let fraction_descent = params.denominator_shift_down + denom_out.descent;
-        // Position numerator at top (y = 0 in content box)
-        let num_x = physical_padding.left
+        let content_block = fraction_ascent + fraction_descent;
+        // Content box start corner in physical coordinates
+        let content_left = physical_padding.left + physical_border.left;
+        let content_top = physical_padding.top + physical_border.top;
+        // Position numerator
+        let num_x = content_left
             + self.horizontal_offset(content_width, num_out.inline_size, self.num_align);
-        let num_y = physical_padding.top;
+        let num_y = content_top;
         translate_fragments(&mut num_out.fragments, num_x, num_y);
         // Position denominator below fraction bar
-        let denom_x = physical_padding.left
+        let denom_x = content_left
             + self.horizontal_offset(content_width, denom_out.inline_size, self.denom_align);
-        let denom_y = physical_padding.top + fraction_ascent + params.denominator_shift_down - denom_out.ascent;
+        let denom_y = content_top + fraction_ascent + params.denominator_shift_down - denom_out.ascent;
         translate_fragments(&mut denom_out.fragments, denom_x, denom_y);
         // Position fraction bar centered at math axis (y = fraction_ascent - math_axis_height)
         let bar_center_y = fraction_ascent - math_axis_height;
         let bar_y = bar_center_y - (thickness / 2);
         let bar_rect = if thickness > Au::zero() {
             Some(PhysicalRect::new(
-                PhysicalPoint::new(physical_padding.left, physical_padding.top + bar_y),
+                PhysicalPoint::new(content_left, content_top + bar_y),
                 PhysicalSize::new(content_width, thickness),
             ))
         } else {
@@ -279,22 +300,26 @@ impl MathFractionBlock {
         let mut children = Vec::with_capacity(num_out.fragments.len() + denom_out.fragments.len());
         children.extend(num_out.fragments);
         children.extend(denom_out.fragments);
-        let total_block = physical_padding.top
-            + fraction_ascent
-            + fraction_descent
-            + physical_padding.bottom;
-        let total_inline = content_width + physical_padding.left + physical_padding.right;
-        let content_size = LogicalVec2 {
-            inline: total_inline,
-            block: total_block,
-        };
+        let padding_border_inline = physical_padding.left + physical_padding.right
+            + physical_border.left + physical_border.right;
+        let padding_border_block = physical_padding.top + physical_padding.bottom
+            + physical_border.top + physical_border.bottom;
+        let total_inline = content_width + padding_border_inline;
+        let total_block = content_block + padding_border_block;
+        // Content box rect relative to the box origin
         let content_rect = LogicalRect {
-            start_corner: LogicalVec2::zero(),
-            size: content_size,
+            start_corner: LogicalVec2 {
+                inline: pbm.padding.inline_start + pbm.border.inline_start,
+                block: pbm.padding.block_start + pbm.border.block_start,
+            },
+            size: LogicalVec2 {
+                inline: content_width,
+                block: content_block,
+            },
         }
         .as_physical(Some(containing_block));
         // Baseline: distance from box top to baseline
-        let fraction_baseline = physical_padding.top + fraction_ascent;
+        let fraction_baseline = content_top + fraction_ascent;
         let baselines = Baselines {
             first: Some(fraction_baseline),
             last: Some(fraction_baseline),
@@ -305,7 +330,7 @@ impl MathFractionBlock {
             children,
             content_rect,
             physical_padding,
-            pbm.border.to_physical(writing_mode),
+            physical_border,
             pbm.margin.auto_is(Au::zero).to_physical(writing_mode),
             None,
         )
@@ -318,7 +343,7 @@ impl MathFractionBlock {
             inline_size: total_inline,
             block_size: total_block,
             ascent: fraction_baseline,
-            descent: fraction_descent + physical_padding.bottom,
+            descent: fraction_descent + physical_padding.bottom + physical_border.bottom,
         }
     }
 }

@@ -5,6 +5,7 @@
 pub(crate) mod mfrac;
 pub(crate) mod mpadded;
 pub(crate) mod mrow;
+pub(crate) mod mspace;
 pub(crate) mod operator;
 pub(crate) mod text;
 
@@ -16,6 +17,7 @@ use crate::flow::{
 };
 use crate::formatting_contexts::{Baselines, IndependentFormattingContextContents};
 use crate::geom::LogicalSides1D;
+use crate::mathml::mspace::MathSpaceBlock;
 use app_units::Au;
 use style::Zero;
 use fonts::FontRef;
@@ -25,6 +27,8 @@ use servo_arc::Arc as ServoArc;
 use style::context::SharedStyleContext;
 use style::logical_geometry::Direction;
 use style::properties::ComputedValues;
+use style::properties::style_structs::Font;
+use style::values::computed::MathStyle;
 use unicode_bidi::Level;
 use web_atoms::local_name;
 use crate::geom::PhysicalVec;
@@ -174,6 +178,59 @@ impl MathLayoutOutput {
         }
     }
 }
+
+// pub(crate) struct MathConstants {
+//     pub axis_height: Au,
+//     pub rule_thickness: Au,
+//     pub num_shift_up: Au,
+//     pub num_gap_min: Au,
+//     pub denom_shift_down: Au,
+//     pub denom_gap_min: Au,
+//     pub stack_top_shift_up: Au,
+//     pub stack_bottom_shift_down: Au,
+//     pub stack_gap_min: Au,
+// }
+// impl MathConstants {
+//     pub(crate) fn from_font(font: Option<&Font>, style: &ComputedValues) -> Self {
+//         let is_display = style.get_math_style() == MathStyle::Normal;
+//         let Some(font) = font else {
+//             return Self::default_fallback();
+//         };
+//         let metrics = &font.metrics;
+//         let default_rule = metrics.underline_size.max(Au::from_px(1));
+//         // Check if HarfBuzz font face has OpenType MATH table:
+//         // if hb_ot_math_has_data(font.hb_face) { ... query HarfBuzz ... }
+//         if let Some(hb_constants) = font.query_math_constants(is_display) {
+//             return hb_constants;
+//         }
+//         // Chapter 5.1 Fallback implementation:
+//         Self {
+//             axis_height: metrics.x_height / 2,
+//             rule_thickness: default_rule,
+//             num_shift_up: Au::zero(),
+//             num_gap_min: if is_display { default_rule * 3 } else { default_rule },
+//             denom_shift_down: Au::zero(),
+//             denom_gap_min: if is_display { default_rule * 3 } else { default_rule },
+//             stack_top_shift_up: Au::zero(),
+//             stack_bottom_shift_down: Au::zero(),
+//             stack_gap_min: if is_display { default_rule * 7 } else { default_rule * 3 },
+//         }
+//     }
+//     fn default_fallback() -> Self {
+//         Self {
+//             axis_height: Au::from_px(4),
+//             rule_thickness: Au::from_px(1),
+//             num_shift_up: Au::zero(),
+//             num_gap_min: Au::from_px(2),
+//             denom_shift_down: Au::zero(),
+//             denom_gap_min: Au::from_px(2),
+//             stack_top_shift_up: Au::zero(),
+//             stack_bottom_shift_down: Au::zero(),
+//             stack_gap_min: Au::from_px(7),
+//         }
+//     }
+// }
+
 /// Computes the math axis height (distance from baseline to math axis).
 pub(crate) fn math_axis_height(font: &FontRef) -> Au {
     if let Some(metrics) = font.metrics.get() {
@@ -287,6 +344,7 @@ impl MathContainer {
 #[derive(Debug, MallocSizeOf)]
 pub(crate) enum MathLevelBox {
     Row(ArcRefCell<MathRowBlock>),
+    Space(ArcRefCell<MathSpaceBlock>),
     Padded(ArcRefCell<MathPaddedBlock>),
     Fraction(ArcRefCell<MathFractionBlock>),
     Text(ArcRefCell<MathTextBlock>),
@@ -296,6 +354,7 @@ macro_rules! dispatch_math_box {
     ($self:expr, borrow =>$method:ident ($($arg:expr),*)) => {
         match $self {
             MathLevelBox::Row(b) => b.borrow().$method($($arg),*),
+            MathLevelBox::Space(b) => b.borrow().$method($($arg),*),
             MathLevelBox::Padded(b) => b.borrow().$method($($arg),*),
             MathLevelBox::Fraction(b) => b.borrow().$method($($arg),*),
             MathLevelBox::Text(b) => b.borrow().$method($($arg),*),
@@ -305,6 +364,7 @@ macro_rules! dispatch_math_box {
     ($self:expr, borrow_mut =>$method:ident ($($arg:expr),*)) => {
         match $self {
             MathLevelBox::Row(b) => b.borrow_mut().$method($($arg),*),
+            MathLevelBox::Space(b) => b.borrow_mut().$method($($arg),*),
             MathLevelBox::Padded(b) => b.borrow_mut().$method($($arg),*),
             MathLevelBox::Fraction(b) => b.borrow_mut().$method($($arg),*),
             MathLevelBox::Text(b) => b.borrow_mut().$method($($arg),*),
@@ -314,6 +374,7 @@ macro_rules! dispatch_math_box {
     ($self:expr, base =>$callback:expr) => {
         match $self {
             MathLevelBox::Row(b) => $callback(&b.borrow().base),
+            MathLevelBox::Space(b) => $callback(&b.borrow().base),
             MathLevelBox::Padded(b) => $callback(&b.borrow().base),
             MathLevelBox::Fraction(b) => $callback(&b.borrow().inner_row.base),
             MathLevelBox::Text(b) => $callback(&b.borrow().base),
@@ -323,6 +384,7 @@ macro_rules! dispatch_math_box {
     ($self:expr, base_mut =>$callback:expr) => {
         match $self {
             MathLevelBox::Row(b) => $callback(&mut b.borrow_mut().base),
+            MathLevelBox::Space(b) => $callback(&mut b.borrow_mut().base),
             MathLevelBox::Padded(b) => $callback(&mut b.borrow_mut().base),
             MathLevelBox::Fraction(b) => $callback(&mut b.borrow_mut().inner_row.base),
             MathLevelBox::Text(b) => $callback(&mut b.borrow_mut().base),
@@ -361,6 +423,9 @@ impl MathLevelBox {
             )),
             Some(name) if name == &local_name!("mfrac") => MathLevelBox::Fraction(ArcRefCell::new(
                 MathFractionBlock::construct(context, node_and_style_info, children),
+            )),
+            Some(name) if name == &local_name!("mspace") => MathLevelBox::Space(ArcRefCell::new(
+                MathSpaceBlock::construct(context, node_and_style_info),
             )),
             _ => MathLevelBox::Row(ArcRefCell::new(MathRowBlock::construct(
                 node_and_style_info,
@@ -405,6 +470,9 @@ impl MathLevelBox {
     ) -> MathLayoutOutput {
         match self {
             MathLevelBox::Row(b) => {
+                b.borrow().layout(layout_context, positioning_context, containing_block, target_size)
+            }
+            MathLevelBox::Space(b) => {
                 b.borrow().layout(layout_context, positioning_context, containing_block, target_size)
             }
             MathLevelBox::Fraction(b) => {
