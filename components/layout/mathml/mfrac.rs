@@ -1,13 +1,24 @@
 use app_units::Au;
 use malloc_size_of_derive::MallocSizeOf;
 use script::layout_dom::ServoLayoutNode;
+use layout_api::{LayoutElement, LayoutNode};
 use servo_arc::Arc as ServoArc;
-use style::computed_values::position::T;
+use style::values::computed::LengthPercentage;
 use style::logical_geometry::LogicalAxis;
 use style::values::generics::position::Position;
+use web_atoms::{local_name, ns};
 use std::sync::Arc;
 use style::context::SharedStyleContext;
 use style::properties::ComputedValues;
+use style::context::TreeCountingCaches;
+use style::dom::DummyElementContext;
+use style::properties::StyleBuilder;
+use style::rule_cache::RuleCacheConditions;
+use style::rule_tree::RuleCascadeFlags;
+use style::stylesheets::container_rule::ContainerSizeQuery;
+use style::values::computed::{Context, ToComputedValue};
+use style::Zero;
+use style::attr::AttrValue;
 
 use super::{MathLevelBox, MathRowBlock};
 use crate::cell::ArcRefCell;
@@ -27,7 +38,6 @@ use crate::positioned::PositioningContext;
 use crate::sizing::{ContentSizes, InlineContentSizesResult, Size, SizeConstraint};
 use crate::style_ext::LayoutStyle;
 use crate::{ConstraintSpace, ContainingBlock, ContainingBlockSize};
-use style::Zero;
 
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct FractionParameters {
@@ -39,7 +49,8 @@ pub(crate) struct MathFractionBlock {
     pub inner_row: MathRowBlock,
     pub numerator: Option<ArcRefCell<MathLevelBox>>,
     pub denominator: Option<ArcRefCell<MathLevelBox>>,
-    pub linethickness: Option<Au>,
+    #[ignore_malloc_size_of = "LengthPercentage does not allocate on the heap"]
+    pub linethickness: Option<LengthPercentage>,
     pub num_align: FractionAlignment,
     pub denom_align: FractionAlignment,
 }
@@ -55,6 +66,36 @@ impl MathFractionBlock {
         node_and_style_info: &NodeAndStyleInfo,
         children: Vec<ArcRefCell<MathLevelBox>>,
     ) -> Self {
+        let element = node_and_style_info.node.as_element();
+
+        let rule_cache_conditions = &mut RuleCacheConditions::default();
+        let mut tree_counting_caches = TreeCountingCaches::default();
+        let style_builder = StyleBuilder::new(
+            context.style_context.stylist.device(),
+            Some(context.style_context.stylist),
+            Some(&node_and_style_info.style),
+            None,
+            None,
+            false,
+        );
+        let to_computed_context = Context::new(
+            style_builder,
+            context.style_context.quirks_mode(),
+            rule_cache_conditions,
+            ContainerSizeQuery::none(),
+            RuleCascadeFlags::empty(),
+            &DummyElementContext,
+            &mut tree_counting_caches,
+        );
+        let parse_attr = |name| {
+            element
+                .as_ref()
+                .and_then(|el| el.attribute(&ns!(), &name))
+                .and_then(AttrValue::as_length_percentage)
+                .and_then(|lp| Some(lp.to_computed_value(&to_computed_context)))
+        };
+        let linethickness = parse_attr(local_name!("linethickness"));
+
         // Only in-flow children count as numerator / denominator
         let mut in_flow_children: Vec<ArcRefCell<MathLevelBox>> = Vec::new();
         let mut out_of_flow: Vec<ArcRefCell<MathLevelBox>> = Vec::new();
@@ -76,7 +117,7 @@ impl MathFractionBlock {
                 inner_row,
                 numerator,
                 denominator,
-                linethickness: None,
+                linethickness: linethickness,
                 num_align: FractionAlignment::Center,
                 denom_align: FractionAlignment::Center,
             }
@@ -108,8 +149,12 @@ impl MathFractionBlock {
         Au::from_px(1)
     }
     pub(crate) fn line_thickness(&self) -> Au {
-        self.linethickness
-            .unwrap_or_else(|| self.default_line_thickness())
+        self
+        .linethickness
+        .as_ref()
+        .map(|lp| lp.to_used_value(Au::zero()))
+        .unwrap_or(self.default_line_thickness())
+        .max(Au::zero())
     }
     fn fraction_parameters(
         &self,

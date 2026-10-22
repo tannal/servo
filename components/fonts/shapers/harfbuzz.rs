@@ -26,14 +26,33 @@ use harfbuzz_sys::{
     hb_glyph_info_t, hb_glyph_position_t, hb_language_from_string, hb_ot_layout_get_baseline,
     hb_position_t, hb_script_from_iso15924_tag, hb_shape, hb_tag_t, hb_variation_t,
 };
+use harfbuzz_sys::{
+    hb_ot_math_has_data, hb_ot_math_get_constant,
+    HB_OT_MATH_CONSTANT_AXIS_HEIGHT,
+    HB_OT_MATH_CONSTANT_FRACTION_RULE_THICKNESS,
+    HB_OT_MATH_CONSTANT_FRACTION_NUMERATOR_SHIFT_UP,
+    HB_OT_MATH_CONSTANT_FRACTION_NUMERATOR_DISPLAY_STYLE_SHIFT_UP,
+    HB_OT_MATH_CONSTANT_FRACTION_DENOMINATOR_SHIFT_DOWN,
+    HB_OT_MATH_CONSTANT_FRACTION_DENOMINATOR_DISPLAY_STYLE_SHIFT_DOWN,
+    HB_OT_MATH_CONSTANT_FRACTION_NUMERATOR_GAP_MIN,
+    HB_OT_MATH_CONSTANT_FRACTION_NUM_DISPLAY_STYLE_GAP_MIN,
+    HB_OT_MATH_CONSTANT_FRACTION_DENOMINATOR_GAP_MIN,
+    HB_OT_MATH_CONSTANT_FRACTION_DENOM_DISPLAY_STYLE_GAP_MIN,
+    HB_OT_MATH_CONSTANT_STACK_TOP_SHIFT_UP,
+    HB_OT_MATH_CONSTANT_STACK_TOP_DISPLAY_STYLE_SHIFT_UP,
+    HB_OT_MATH_CONSTANT_STACK_BOTTOM_SHIFT_DOWN,
+    HB_OT_MATH_CONSTANT_STACK_BOTTOM_DISPLAY_STYLE_SHIFT_DOWN,
+    HB_OT_MATH_CONSTANT_STACK_GAP_MIN,
+    HB_OT_MATH_CONSTANT_STACK_DISPLAY_STYLE_GAP_MIN,
+};
+
 use num_traits::Zero;
 use read_fonts::types::Tag;
 
 use super::{GlyphShapingResult, ShapedGlyph, unicode_script_to_iso15924_tag};
 use crate::platform::font::FontTable;
 use crate::{
-    BASE, Font, FontBaseline, FontTableMethods, GlyphId, ShapedText, ShapingFlags, ShapingOptions,
-    fixed_to_float, float_to_fixed,
+    BASE, Font, FontBaseline, FontTableMethods, GlyphId, MathConstants, ShapedText, ShapingFlags, ShapingOptions, fixed_to_float, float_to_fixed,
 };
 
 const HB_OT_TAG_DEFAULT_SCRIPT: hb_tag_t = u32::from_be_bytes(Tag::new(b"DFLT").to_be_bytes());
@@ -245,6 +264,57 @@ impl Shaper {
                 hb_font,
                 font,
             }
+        }
+    }
+
+    pub(crate) fn math_constants(&self, is_display: bool) -> Option<MathConstants> {
+        unsafe {
+            if hb_ot_math_has_data(self.hb_face) == 0 {
+                return None;
+            }
+            let get = |constant| {
+                let pos = hb_ot_math_get_constant(self.hb_font, constant);
+                Au::from_f64_px(Shaper::fixed_to_float(pos))
+            };
+            Some(MathConstants {
+                axis_height: get(HB_OT_MATH_CONSTANT_AXIS_HEIGHT),
+                rule_thickness: get(HB_OT_MATH_CONSTANT_FRACTION_RULE_THICKNESS),
+                num_shift_up: if is_display {
+                    get(HB_OT_MATH_CONSTANT_FRACTION_NUMERATOR_DISPLAY_STYLE_SHIFT_UP)
+                } else {
+                    get(HB_OT_MATH_CONSTANT_FRACTION_NUMERATOR_SHIFT_UP)
+                },
+                num_gap_min: if is_display {
+                    get(HB_OT_MATH_CONSTANT_FRACTION_NUM_DISPLAY_STYLE_GAP_MIN)
+                } else {
+                    get(HB_OT_MATH_CONSTANT_FRACTION_NUMERATOR_GAP_MIN)
+                },
+                denom_shift_down: if is_display {
+                    get(HB_OT_MATH_CONSTANT_FRACTION_DENOMINATOR_DISPLAY_STYLE_SHIFT_DOWN)
+                } else {
+                    get(HB_OT_MATH_CONSTANT_FRACTION_DENOMINATOR_SHIFT_DOWN)
+                },
+                denom_gap_min: if is_display {
+                    get(HB_OT_MATH_CONSTANT_FRACTION_DENOM_DISPLAY_STYLE_GAP_MIN)
+                } else {
+                    get(HB_OT_MATH_CONSTANT_FRACTION_DENOMINATOR_GAP_MIN)
+                },
+                stack_top_shift_up: if is_display {
+                    get(HB_OT_MATH_CONSTANT_STACK_TOP_DISPLAY_STYLE_SHIFT_UP)
+                } else {
+                    get(HB_OT_MATH_CONSTANT_STACK_TOP_SHIFT_UP)
+                },
+                stack_bottom_shift_down: if is_display {
+                    get(HB_OT_MATH_CONSTANT_STACK_BOTTOM_DISPLAY_STYLE_SHIFT_DOWN)
+                } else {
+                    get(HB_OT_MATH_CONSTANT_STACK_BOTTOM_SHIFT_DOWN)
+                },
+                stack_gap_min: if is_display {
+                    get(HB_OT_MATH_CONSTANT_STACK_DISPLAY_STYLE_GAP_MIN)
+                } else {
+                    get(HB_OT_MATH_CONSTANT_STACK_GAP_MIN)
+                },
+            })
         }
     }
 
