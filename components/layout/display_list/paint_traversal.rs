@@ -8,6 +8,7 @@ use std::sync::Arc;
 use app_units::Au;
 use servo_base::id::ScrollTreeNodeId;
 use style::values::computed::TextDecorationLine;
+use style::values::specified::{Overflow, WillChangeBits, box_ as stylo};
 
 use crate::display_list::{
     ClipId, ContainerTimingRootChain, ContainerTimingRoots, FragmentTextDecoration,
@@ -245,13 +246,15 @@ impl<'a, Handler: PaintTraversalHandler> PaintTraversal<'a, Handler> {
                     return false;
                 }
 
-                // We will process inline atomics during the inline level and replaced traversal.
-                if box_fragment.is_atomic_inline_level() || box_fragment.is_flex_or_grid_item() {
+                // In normal HTML, we will process inline atomics during the inline level and replaced traversal.
+                // In MathML, §3.1.4 mandates that in-flow children paint like block elements,
+                // so we must NOT skip them when state.is_inside_math is true.
+                if !state.is_inside_math && (box_fragment.is_atomic_inline_level() || box_fragment.is_flex_or_grid_item()) {
                     return true;
                 }
 
-                // Don't paint any inline boxes, but do descend into them, in case they contain floats.
-                if box_fragment.is_inline_box() {
+                // Don't paint HTML inline boxes (spans), but in MathML all in-flow children paint like blocks:
+                if box_fragment.is_inline_box() && !state.is_inside_math {
                     saw_inline_level_or_replaced = true;
                 } else {
                     self.handle_box(state, box_fragment);
@@ -297,29 +300,12 @@ impl<'a, Handler: PaintTraversalHandler> PaintTraversal<'a, Handler> {
             },
             Fragment::Math(math_fragment) => {
                 let box_fragment = &math_fragment.box_fragment.with_style();
-
-                // Skip if it establishes a stacking context (handled in stacking context phase)
                 if box_fragment.stacking_context_type().is_some() {
                     return false;
                 }
-
-                // Atomic inlines / math containers are handled during line boxes and replaced traversal
-                if box_fragment.is_atomic_inline_level() || box_fragment.is_flex_or_grid_item() {
-                    return true;
-                }
-
-                if box_fragment.is_inline_box() {
-                    saw_inline_level_or_replaced = true;
-                } else {
-                    self.handle_box(state, box_fragment);
-                    self.handler.visit_math(state, math_fragment);
-                }
-
-                if box_fragment.is_replaced() {
-                    return true;
-                }
-
-                let state_for_children = state.push_box_fragment(box_fragment);
+                self.handle_box(state, box_fragment);
+                let mut state_for_children = state.push_box_fragment(box_fragment);
+                state_for_children.is_inside_math = true;
                 for child in box_fragment.children.iter() {
                     saw_inline_level_or_replaced |= self
                         .traverse_block_level_descendants_decorations(&state_for_children, child);
@@ -429,10 +415,7 @@ impl<'a, Handler: PaintTraversalHandler> PaintTraversal<'a, Handler> {
                     box_fragment,
                     at_root_of_stacking_context,
                 );
-                
-                // Crucial: push the box fragment state so state.origin includes the <mfrac> origin offset!
-                // let state_for_math = state.push_box_fragment(box_fragment);
-                self.handler.visit_math(&state, math_fragment);
+                self.handler.visit_math(state, math_fragment);
             },
             Fragment::AbsoluteOrFixedPositionedPlaceholder(_)
             | Fragment::Float(..)
@@ -461,6 +444,9 @@ impl<'a, Handler: PaintTraversalHandler> PaintTraversal<'a, Handler> {
                 false, /* at_stacking_context_root */
             ),
             Fragment::Math(math_fragment) => {
+                if math_fragment.box_fragment.stacking_context_type().is_some() {
+                    return;
+                }
                 let box_fragment = &math_fragment.box_fragment.with_style();
                 self.traverse_box_in_a_line_box(
                     state,
@@ -468,9 +454,7 @@ impl<'a, Handler: PaintTraversalHandler> PaintTraversal<'a, Handler> {
                     line_box_rect,
                     false, /* at_stacking_context_root */
                 );
-            
-                // let state_for_math = state.push_box_fragment(box_fragment);
-                self.handler.visit_math(&state, math_fragment);
+                self.handler.visit_math(state, math_fragment);
             },
             Fragment::Text(text_fragment) => {
                 self.handler.visit_text(state, line_box_rect, text_fragment);
@@ -645,6 +629,8 @@ pub(crate) struct TraversalState {
     /// Note that this does not include the box currently being visited, see
     /// [`Self::container_timing_roots_including`].
     pub container_timing_roots: ContainerTimingRoots,
+    /// True if currently traversing within a MathML element subtree.
+    pub is_inside_math: bool,
 }
 
 impl Default for TraversalState {
@@ -657,6 +643,7 @@ impl Default for TraversalState {
             accumulated_opacity: 1.0,
             containing_element_tag: Default::default(),
             container_timing_roots: Default::default(),
+            is_inside_math: false,
         }
     }
 }
@@ -722,6 +709,7 @@ impl TraversalState {
             } else {
                 self.containing_element_tag
             },
+            is_inside_math: self.is_inside_math || style.get_box().display.inside() == stylo::DisplayInside::Math,
         }
     }
 
@@ -755,6 +743,7 @@ impl TraversalState {
                 positioning_fragment.style.borrow().slow_clone_opacity(),
             containing_element_tag: self.containing_element_tag,
             container_timing_roots: self.container_timing_roots.clone(),
+            is_inside_math: self.is_inside_math,
         }
     }
 
@@ -770,6 +759,7 @@ impl TraversalState {
                     .map_or(1.0, |fragment| fragment.style().slow_clone_opacity()),
             containing_element_tag: self.containing_element_tag,
             container_timing_roots: stacking_context.container_timing_roots.clone(),
+            is_inside_math: self.is_inside_math,
         }
     }
 }

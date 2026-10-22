@@ -468,7 +468,7 @@ impl MathLevelBox {
         containing_block: &ContainingBlock,
         target_size: Option<(Au, Au)>,
     ) -> MathLayoutOutput {
-        match self {
+        let output = match self {
             MathLevelBox::Row(b) => {
                 b.borrow().layout(layout_context, positioning_context, containing_block, target_size)
             }
@@ -515,6 +515,15 @@ impl MathLevelBox {
                     descent,
                 }
             }
-        }
+        };
+
+        self.with_base(|base| {
+            base.clear_fragments();
+            for fragment in &output.fragments {
+                base.add_fragment(fragment.clone());
+            }
+        });
+
+        output
     }
 }

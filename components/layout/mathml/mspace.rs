@@ -7,6 +7,9 @@ use style::context::SharedStyleContext;
 use style::properties::ComputedValues;
 use style::values::computed::LengthPercentage;
 // use style::values::specified::length::NonNegativeLength;
+use std::sync::Arc;
+use style::Zero;
+use style::attr::AttrValue;
 use style::context::TreeCountingCaches;
 use style::dom::DummyElementContext;
 use style::properties::StyleBuilder;
@@ -14,10 +17,7 @@ use style::rule_cache::RuleCacheConditions;
 use style::rule_tree::RuleCascadeFlags;
 use style::stylesheets::container_rule::ContainerSizeQuery;
 use style::values::computed::{Context, ToComputedValue};
-use style::Zero;
-use style::attr::AttrValue;
 use web_atoms::{local_name, ns};
-use std::sync::Arc;
 
 use crate::context::LayoutContext;
 use crate::dom::WeakLayoutBox;
@@ -31,7 +31,6 @@ use crate::positioned::PositioningContext;
 use crate::sizing::{ContentSizes, InlineContentSizesResult};
 use crate::style_ext::LayoutStyle;
 use crate::{ConstraintSpace, ContainingBlock};
-
 
 #[derive(Debug, MallocSizeOf)]
 pub(crate) struct MathSpaceBlock {
@@ -108,6 +107,36 @@ impl MathSpaceBlock {
         new_style: &ServoArc<ComputedValues>,
     ) {
         self.base.repair_style(new_style);
+        let rule_cache_conditions = &mut RuleCacheConditions::default();
+        let mut tree_counting_caches = TreeCountingCaches::default();
+        let style_builder = StyleBuilder::new(
+            context.stylist.device(),
+            Some(context.stylist),
+            Some(new_style),
+            None,
+            None,
+            false,
+        );
+        let to_computed_context = Context::new(
+            style_builder,
+            context.quirks_mode(),
+            rule_cache_conditions,
+            ContainerSizeQuery::none(),
+            RuleCascadeFlags::empty(),
+            &DummyElementContext,
+            &mut tree_counting_caches,
+        );
+        let element = node.as_element();
+        let parse_attr = |name| {
+            element
+                .as_ref()
+                .and_then(|el| el.attribute(&ns!(), &name))
+                .and_then(AttrValue::as_length_percentage)
+                .map(|lp| lp.to_computed_value(&to_computed_context))
+        };
+        self.width = parse_attr(local_name!("width"));
+        self.height = parse_attr(local_name!("height"));
+        self.depth = parse_attr(local_name!("depth"));
     }
     pub(crate) fn attached_to_tree(&self, _layout_box: WeakLayoutBox) {}
 
@@ -116,10 +145,12 @@ impl MathSpaceBlock {
         _layout_context: &LayoutContext,
         _constraint_space: &ConstraintSpace,
     ) -> InlineContentSizesResult {
-        let width = self.width.as_ref()
-        .map(|lp| lp.to_used_value(Au::zero()))
-        .unwrap_or(Au::zero())
-        .max(Au::zero());
+        let width = self
+            .width
+            .as_ref()
+            .map(|lp| lp.to_used_value(Au::zero()))
+            .unwrap_or(Au::zero())
+            .max(Au::zero());
 
         InlineContentSizesResult {
             sizes: ContentSizes {
@@ -166,10 +197,14 @@ impl MathSpaceBlock {
             .map(|lp| lp.to_used_value(Au::zero()))
             .unwrap_or(Au::zero())
             .max(Au::zero());
-        let padding_border_inline = physical_padding.left + physical_padding.right
-            + physical_border.left + physical_border.right;
-        let padding_border_block = physical_padding.top + physical_padding.bottom
-            + physical_border.top + physical_border.bottom;
+        let padding_border_inline = physical_padding.left
+            + physical_padding.right
+            + physical_border.left
+            + physical_border.right;
+        let padding_border_block = physical_padding.top
+            + physical_padding.bottom
+            + physical_border.top
+            + physical_border.bottom;
         let total_inline = width + padding_border_inline;
         let total_block = height + depth + padding_border_block;
         // Content box: size is (width, height + depth), offset by padding-start + border-start

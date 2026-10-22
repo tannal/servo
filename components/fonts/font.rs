@@ -104,6 +104,18 @@ pub(crate) const ZERO: Tag = Tag::new(b"zero");
 
 pub const LAST_RESORT_GLYPH_ADVANCE: FractionalPixel = 10.0;
 
+pub struct MathConstants {
+    pub axis_height: Au,
+    pub rule_thickness: Au,
+    pub num_shift_up: Au,
+    pub num_gap_min: Au,
+    pub denom_shift_down: Au,
+    pub denom_gap_min: Au,
+    pub stack_top_shift_up: Au,
+    pub stack_bottom_shift_down: Au,
+    pub stack_gap_min: Au,
+}
+
 // PlatformFont encapsulates access to the platform's font API,
 // e.g. quartz, FreeType. It provides access to metrics and tables
 // needed by the text shaper as well as access to the underlying font
@@ -395,6 +407,10 @@ impl Font {
             can_do_fast_shaping: OnceLock::new(),
             family_name: Default::default(),
         })
+    }
+
+    pub fn math_constants(&self, is_display: bool) -> Option<MathConstants> {
+        self.shaper.get_or_init(|| Shaper::new(self)).math_constants(is_display)
     }
 
     /// A unique identifier for the font, allowing comparison.

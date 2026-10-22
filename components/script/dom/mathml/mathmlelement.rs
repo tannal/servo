@@ -104,6 +104,13 @@ impl VirtualMethods for MathMLElement {
     fn attribute_affects_presentational_hints(&self, attr: AttrRef<'_>) -> bool {
         // TODO(tannal) Add `displaystyle` and `scriptlevel`.
         match attr.local_name() {
+            &local_name!("display") |
+            &local_name!("lspace") |
+            &local_name!("rspace") |
+            &local_name!("width") |
+            &local_name!("height") |
+            &local_name!("depth") |
+            &local_name!("linethickness") |
             &local_name!("mathcolor") |
             &local_name!("mathbackground") |
             &local_name!("mathsize") |
