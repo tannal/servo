@@ -34,7 +34,7 @@ use crate::geom::{LogicalRect, LogicalVec2, PhysicalPoint, PhysicalRect, Physica
 use crate::layout_box_base::LayoutBoxBase;
 use crate::mathml::{MathLayoutOutput, translate_fragments};
 use crate::positioned::PositioningContext;
-use crate::sizing::{ContentSizes, InlineContentSizesResult, Size};
+use crate::sizing::{ContentSizes, InlineContentSizesResult, Size, SizeConstraint};
 use crate::style_ext::LayoutStyle;
 use crate::{ConstraintSpace, ContainingBlock, ContainingBlockSize};
 
@@ -366,25 +366,40 @@ impl MathFractionBlock {
 
         let num_box = self.numerator.as_ref().unwrap();
         let denom_box = self.denominator.as_ref().unwrap();
-        let unconstrained_cb = ContainingBlock {
+        let constraint_space = ConstraintSpace::new(SizeConstraint::default(), style, None);
+        let num_sizes = num_box
+            .borrow()
+            .inline_content_sizes(layout_context, &constraint_space);
+        let denom_sizes = denom_box
+            .borrow()
+            .inline_content_sizes(layout_context, &constraint_space);
+        let num_cb = ContainingBlock {
             size: ContainingBlockSize {
-                inline: containing_block.size.inline,
+                inline: num_sizes.sizes.max_content,
                 block: containing_block.size.block,
             },
             style: containing_block.style,
         };
-
+        let denom_cb = ContainingBlock {
+            size: ContainingBlockSize {
+                inline: denom_sizes.sizes.max_content,
+                block: containing_block.size.block,
+            },
+            style: containing_block.style,
+        };
         // Layout numerator with target_size, denominator unconstrained (MathML Core §3.3.2.1)
         let mut num_out = num_box.borrow().layout(
             layout_context,
             positioning_context,
-            &unconstrained_cb,
+            &num_cb,
             target_size,
         );
-        let mut denom_out =
-            denom_box
-                .borrow()
-                .layout(layout_context, positioning_context, &unconstrained_cb, None);
+        let mut denom_out = denom_box.borrow().layout(
+            layout_context,
+            positioning_context,
+            &denom_cb,
+            None,
+        );
 
         let padding_border_inline = physical_padding.left
             + physical_padding.right
