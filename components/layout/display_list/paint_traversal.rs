@@ -410,17 +410,12 @@ impl<'a, Handler: PaintTraversalHandler> PaintTraversal<'a, Handler> {
                     return;
                 }
                 let box_fragment = &math_fragment.box_fragment.with_style();
-                let mut state_for_math = state.push_box_fragment(box_fragment);
-                state_for_math.is_inside_math = true;
-                // 1. Traverse in-flow children so all numerator/denominator text is painted
                 self.traverse_line_boxes_and_replaced_for_box(
-                    &state_for_math,
+                    state,
                     box_fragment,
                     at_root_of_stacking_context,
                 );
-                // 2. Per MathML Core §3.1.4: Extra graphical items are painted right after 
-                // text and backgrounds (Step 7.2 / 7.2.4)
-                self.handler.visit_math(&state_for_math, math_fragment);
+                self.handler.visit_math(state, math_fragment);
             },
             Fragment::AbsoluteOrFixedPositionedPlaceholder(_)
             | Fragment::Float(..)
@@ -449,6 +444,9 @@ impl<'a, Handler: PaintTraversalHandler> PaintTraversal<'a, Handler> {
                 false, /* at_stacking_context_root */
             ),
             Fragment::Math(math_fragment) => {
+                if math_fragment.box_fragment.stacking_context_type().is_some() {
+                    return;
+                }
                 let box_fragment = &math_fragment.box_fragment.with_style();
                 self.traverse_box_in_a_line_box(
                     state,
@@ -456,9 +454,7 @@ impl<'a, Handler: PaintTraversalHandler> PaintTraversal<'a, Handler> {
                     line_box_rect,
                     false, /* at_stacking_context_root */
                 );
-            
-                // let state_for_math = state.push_box_fragment(box_fragment);
-                self.handler.visit_math(&state, math_fragment);
+                self.handler.visit_math(state, math_fragment);
             },
             Fragment::Text(text_fragment) => {
                 self.handler.visit_text(state, line_box_rect, text_fragment);
