@@ -44,6 +44,112 @@ pub(crate) struct FractionParameters {
     pub denominator_shift_down: Au,
 }
 
+/// Font-dependent inputs shared by fraction and stack layout.
+#[derive(Debug, Clone, Copy)]
+struct FractionMetrics {
+    axis_height: Au,
+    default_thickness: Au,
+    numerator_shift_up: Au,
+    denominator_shift_down: Au,
+    numerator_gap_min: Au,
+    denominator_gap_min: Au,
+    stack_top_shift_up: Au,
+    stack_bottom_shift_down: Au,
+    stack_gap_min: Au,
+}
+
+impl FractionMetrics {
+    fn new(font: Option<&Font>, is_display: bool) -> Self {
+        if let Some(constants) = font.and_then(|font| font.math_constants(is_display)) {
+            return Self {
+                axis_height: constants.axis_height,
+                default_thickness: constants.rule_thickness,
+                numerator_shift_up: constants.num_shift_up,
+                denominator_shift_down: constants.denom_shift_down,
+                numerator_gap_min: constants.num_gap_min,
+                denominator_gap_min: constants.denom_gap_min,
+                stack_top_shift_up: constants.stack_top_shift_up,
+                stack_bottom_shift_down: constants.stack_bottom_shift_down,
+                stack_gap_min: constants.stack_gap_min,
+            };
+        }
+
+        let (axis_height, default_thickness) = font
+            .and_then(|font| font.metrics.get())
+            .map(|metrics| {
+                let axis_height = if metrics.x_height > Au::zero() {
+                    metrics.x_height / 2
+                } else {
+                    metrics.ascent / 3
+                };
+
+                (axis_height, metrics.underline_size.max(Au::from_px(1)))
+            })
+            .unwrap_or((Au::from_px(4), Au::from_px(1)));
+
+        Self {
+            axis_height,
+            default_thickness,
+            numerator_shift_up: Au::zero(),
+            denominator_shift_down: Au::zero(),
+            numerator_gap_min: Au::zero(),
+            denominator_gap_min: Au::zero(),
+            stack_top_shift_up: Au::zero(),
+            stack_bottom_shift_down: Au::zero(),
+            stack_gap_min: (default_thickness * if is_display { 7 } else { 3 }).max(Au::from_px(7)),
+        }
+    }
+
+    /// Applies the fallback rules that depend on the resolved line thickness.
+    fn with_fallback_fraction_parameters(mut self, thickness: Au, is_display: bool) -> Self {
+        let gap = (thickness * if is_display { 3 } else { 1 }).max(Au::from_px(2));
+        let half_thickness = thickness / 2;
+
+        self.numerator_gap_min = gap;
+        self.denominator_gap_min = gap;
+        self.numerator_shift_up = self.axis_height + half_thickness + gap;
+        self.denominator_shift_down = half_thickness + gap;
+
+        self
+    }
+
+    fn compute_parameters(
+        &self,
+        thickness: Au,
+        numerator_descent: Au,
+        denominator_ascent: Au,
+    ) -> FractionParameters {
+        if thickness > Au::zero() {
+            let half_thickness = thickness / 2;
+            let numerator_clearance =
+                self.axis_height + half_thickness + self.numerator_gap_min + numerator_descent;
+            let denominator_clearance =
+                half_thickness + self.denominator_gap_min + denominator_ascent - self.axis_height;
+
+            return FractionParameters {
+                numerator_shift_up: self.numerator_shift_up.max(numerator_clearance),
+                denominator_shift_down: self.denominator_shift_down.max(denominator_clearance),
+            };
+        }
+
+        let mut numerator_shift_up = self.stack_top_shift_up;
+        let mut denominator_shift_down = self.stack_bottom_shift_down;
+        let actual_gap =
+            numerator_shift_up - numerator_descent + denominator_shift_down - denominator_ascent;
+
+        if actual_gap < self.stack_gap_min {
+            let adjustment = (self.stack_gap_min - actual_gap) / 2;
+            numerator_shift_up += adjustment;
+            denominator_shift_down += adjustment;
+        }
+
+        FractionParameters {
+            numerator_shift_up,
+            denominator_shift_down,
+        }
+    }
+}
+
 #[derive(Debug, MallocSizeOf)]
 pub(crate) struct MathFractionBlock {
     pub inner_row: MathRowBlock,
@@ -63,80 +169,117 @@ pub(crate) enum FractionAlignment {
     Right,
 }
 
+impl FractionAlignment {
+    fn offset(self, content_width: Au, child_width: Au) -> Au {
+        match self {
+            Self::Left => Au::zero(),
+            Self::Center => (content_width - child_width) / 2,
+            Self::Right => content_width - child_width,
+        }
+    }
+}
+
+/// Builds the computed-value context in one place.
+///
+/// The callback keeps attribute access at the call site, without requiring
+/// this helper to depend on the concrete node type.
+fn compute_line_thickness(
+    context: &SharedStyleContext,
+    style: &ServoArc<ComputedValues>,
+    resolve: impl FnOnce(&Context) -> Option<LengthPercentage>,
+) -> Option<LengthPercentage> {
+    let mut rule_cache_conditions = RuleCacheConditions::default();
+    let mut tree_counting_caches = TreeCountingCaches::default();
+
+    let style_builder = StyleBuilder::new(
+        context.stylist.device(),
+        Some(context.stylist),
+        Some(style),
+        None,
+        None,
+        false,
+    );
+
+    let computed_context = Context::new(
+        style_builder,
+        context.quirks_mode(),
+        &mut rule_cache_conditions,
+        ContainerSizeQuery::none(),
+        RuleCascadeFlags::empty(),
+        &DummyElementContext,
+        &mut tree_counting_caches,
+    );
+
+    resolve(&computed_context)
+}
+
 impl MathFractionBlock {
     pub(crate) fn construct(
         context: &LayoutContext,
         node_and_style_info: &NodeAndStyleInfo,
         children: Vec<ArcRefCell<MathLevelBox>>,
     ) -> Self {
-        let element = node_and_style_info.node.as_element();
+        // Keep the original children intact until validity is known, so that
+        // fallback layout preserves their original order.
+        let in_flow_indices: Vec<_> = children
+            .iter()
+            .enumerate()
+            .filter_map(|(index, child)| {
+                let is_in_flow = child
+                    .borrow()
+                    .with_base(|base| !base.style.get_box().position.is_absolutely_positioned());
 
-        let rule_cache_conditions = &mut RuleCacheConditions::default();
-        let mut tree_counting_caches = TreeCountingCaches::default();
-        let style_builder = StyleBuilder::new(
-            context.style_context.stylist.device(),
-            Some(context.style_context.stylist),
-            Some(&node_and_style_info.style),
-            None,
-            None,
-            false,
-        );
-        let to_computed_context = Context::new(
-            style_builder,
-            context.style_context.quirks_mode(),
-            rule_cache_conditions,
-            ContainerSizeQuery::none(),
-            RuleCascadeFlags::empty(),
-            &DummyElementContext,
-            &mut tree_counting_caches,
-        );
+                is_in_flow.then_some(index)
+            })
+            .collect();
 
-        let linethickness = element
-            .as_ref()
-            .and_then(|el| el.attribute(&ns!(), &local_name!("linethickness")))
-            .and_then(AttrValue::as_length_percentage)
-            .map(|lp| lp.to_computed_value(&to_computed_context));
-
-        // Only in-flow children count as numerator / denominator
-        let mut in_flow_children: Vec<ArcRefCell<MathLevelBox>> =
-            Vec::with_capacity(children.len());
-        let mut out_of_flow: Vec<ArcRefCell<MathLevelBox>> = Vec::new();
-        for child in children {
-            let is_in_flow = child
-                .borrow()
-                .with_base(|b| !b.style.get_box().position.is_absolutely_positioned());
-            if is_in_flow {
-                in_flow_children.push(child);
-            } else {
-                out_of_flow.push(child);
-            }
-        }
-
-        if in_flow_children.len() == 2 {
-            let denominator = Some(in_flow_children.pop().unwrap());
-            let numerator = Some(in_flow_children.pop().unwrap());
-            let inner_row = MathRowBlock::construct(node_and_style_info, out_of_flow);
-            MathFractionBlock {
-                inner_row,
-                numerator,
-                denominator,
-                linethickness,
-                num_align: FractionAlignment::Center,
-                denom_align: FractionAlignment::Center,
-            }
-        } else {
-            // Fallback: lay out all children as an mrow (MathML Core §3.3.2)
-            let mut all_children = in_flow_children;
-            all_children.extend(out_of_flow);
-            let inner_row = MathRowBlock::construct(node_and_style_info, all_children);
-            MathFractionBlock {
-                inner_row,
+        if in_flow_indices.len() != 2 {
+            return Self {
+                inner_row: MathRowBlock::construct(node_and_style_info, children),
                 numerator: None,
                 denominator: None,
                 linethickness: None,
                 num_align: FractionAlignment::Center,
                 denom_align: FractionAlignment::Center,
+            };
+        }
+
+        let element = node_and_style_info.node.as_element();
+        let linethickness = compute_line_thickness(
+            &context.style_context,
+            &node_and_style_info.style,
+            |computed_context| {
+                element
+                    .as_ref()
+                    .and_then(|element| element.attribute(&ns!(), &local_name!("linethickness")))
+                    .and_then(AttrValue::as_length_percentage)
+                    .map(|value| value.to_computed_value(computed_context))
+            },
+        );
+
+        let numerator_index = in_flow_indices[0];
+        let denominator_index = in_flow_indices[1];
+        let mut numerator = None;
+        let mut denominator = None;
+        let mut out_of_flow = Vec::new();
+
+        for (index, child) in children.into_iter().enumerate() {
+            if index == numerator_index {
+                numerator = Some(child);
+            } else if index == denominator_index {
+                denominator = Some(child);
+            } else {
+                out_of_flow.push(child);
             }
+        }
+
+        Self {
+            inner_row: MathRowBlock::construct(node_and_style_info, out_of_flow),
+            numerator,
+            denominator,
+            linethickness,
+            num_align: FractionAlignment::Center,
+            denom_align: FractionAlignment::Center,
         }
     }
 
@@ -150,14 +293,17 @@ impl MathFractionBlock {
 
     #[inline]
     pub(crate) fn is_valid(&self) -> bool {
-        self.numerator.is_some() && self.denominator.is_some()
+        self.fraction_children().is_some()
     }
 
-    /// Resolves the actual line thickness using the default FractionRuleThickness from font metrics.
-    /// Per MathML Core §3.2.2, percentages resolve relative to default_thickness.
+    fn fraction_children(&self) -> Option<(&ArcRefCell<MathLevelBox>, &ArcRefCell<MathLevelBox>)> {
+        self.numerator.as_ref().zip(self.denominator.as_ref())
+    }
+
+    /// Percentages resolve relative to the default FractionRuleThickness.
     pub(crate) fn resolve_line_thickness(&self, default_thickness: Au) -> Au {
-        match self.linethickness {
-            Some(ref lp) => lp.to_used_value(default_thickness).max(Au::zero()),
+        match &self.linethickness {
+            Some(value) => value.to_used_value(default_thickness).max(Au::zero()),
             None => default_thickness,
         }
     }
@@ -169,6 +315,15 @@ impl MathFractionBlock {
         new_style: &ServoArc<ComputedValues>,
     ) {
         self.inner_row.repair_style(context, node, new_style);
+
+        let element = node.as_element();
+        self.linethickness = compute_line_thickness(context, new_style, |computed_context| {
+            element
+                .as_ref()
+                .and_then(|element| element.attribute(&ns!(), &local_name!("linethickness")))
+                .and_then(AttrValue::as_length_percentage)
+                .map(|value| value.to_computed_value(computed_context))
+        });
     }
 
     pub(crate) fn attached_to_tree(&self, layout_box: WeakLayoutBox) {
@@ -180,162 +335,32 @@ impl MathFractionBlock {
         layout_context: &LayoutContext,
         constraint_space: &ConstraintSpace,
     ) -> InlineContentSizesResult {
-        if !self.is_valid() {
+        let Some((numerator, denominator)) = self.fraction_children() else {
             return self
                 .inner_row
                 .inline_content_sizes(layout_context, constraint_space);
-        }
-        let zero_sizes = InlineContentSizesResult {
-            sizes: ContentSizes {
-                min_content: Au::zero(),
-                max_content: Au::zero(),
-            },
-            depends_on_block_constraints: false,
         };
-        let num_sizes = self.numerator.as_ref().map_or(zero_sizes.clone(), |num| {
-            num.borrow()
-                .inline_content_sizes(layout_context, constraint_space)
-        });
-        let denom_sizes = self.denominator.as_ref().map_or(zero_sizes, |denom| {
-            denom
-                .borrow()
-                .inline_content_sizes(layout_context, constraint_space)
-        });
 
-        let min_content = num_sizes
-            .sizes
-            .min_content
-            .max(denom_sizes.sizes.min_content);
-        let max_content = num_sizes
-            .sizes
-            .max_content
-            .max(denom_sizes.sizes.max_content);
+        let numerator_sizes = numerator
+            .borrow()
+            .inline_content_sizes(layout_context, constraint_space);
+        let denominator_sizes = denominator
+            .borrow()
+            .inline_content_sizes(layout_context, constraint_space);
 
         InlineContentSizesResult {
             sizes: ContentSizes {
-                min_content,
-                max_content,
+                min_content: numerator_sizes
+                    .sizes
+                    .min_content
+                    .max(denominator_sizes.sizes.min_content),
+                max_content: numerator_sizes
+                    .sizes
+                    .max_content
+                    .max(denominator_sizes.sizes.max_content),
             },
-            depends_on_block_constraints: num_sizes.depends_on_block_constraints
-                || denom_sizes.depends_on_block_constraints,
-        }
-    }
-
-    #[inline]
-    fn horizontal_offset(
-        &self,
-        content_width: Au,
-        child_width: Au,
-        align: FractionAlignment,
-    ) -> Au {
-        match align {
-            FractionAlignment::Left => Au::zero(),
-            FractionAlignment::Center => (content_width - child_width) / 2,
-            FractionAlignment::Right => content_width - child_width,
-        }
-    }
-
-    /// Computes fraction layout parameters according to OpenType MATH metrics or MathML Core §5 fallback.
-    fn compute_parameters(
-        &self,
-        font: Option<&Font>,
-        is_display: bool,
-        thickness: Au,
-        num_descent: Au,
-        denom_ascent: Au,
-    ) -> (FractionParameters, Au, Au) {
-        let math_constants = font.and_then(|f| f.math_constants(is_display));
-
-        if let Some(c) = math_constants {
-            let axis_height = c.axis_height;
-            let default_thickness = c.rule_thickness;
-
-            if thickness > Au::zero() {
-                let half_thickness = thickness / 2;
-                let num_clearance = axis_height + half_thickness + c.num_gap_min + num_descent;
-                let denom_clearance = half_thickness + c.denom_gap_min + denom_ascent - axis_height;
-                (
-                    FractionParameters {
-                        numerator_shift_up: c.num_shift_up.max(num_clearance),
-                        denominator_shift_down: c.denom_shift_down.max(denom_clearance),
-                    },
-                    axis_height,
-                    default_thickness,
-                )
-            } else {
-                let mut num_shift_up = c.stack_top_shift_up;
-                let mut denom_shift_down = c.stack_bottom_shift_down;
-                let actual_gap = (num_shift_up - num_descent) + (denom_shift_down - denom_ascent);
-                if actual_gap < c.stack_gap_min {
-                    let delta = (c.stack_gap_min - actual_gap) / 2;
-                    num_shift_up += delta;
-                    denom_shift_down += delta;
-                }
-                (
-                    FractionParameters {
-                        numerator_shift_up: num_shift_up,
-                        denominator_shift_down: denom_shift_down,
-                    },
-                    axis_height,
-                    default_thickness,
-                )
-            }
-        } else {
-            // MathML Core §5 Fallback implementation
-            let font_metrics = font.and_then(|f| f.metrics.get());
-            let (axis_height, default_thickness) = if let Some(metrics) = font_metrics {
-                let axis = if metrics.x_height > Au::zero() {
-                    metrics.x_height / 2
-                } else {
-                    metrics.ascent / 3
-                };
-                let rule = metrics.underline_size.max(Au::from_px(1));
-                (axis, rule)
-            } else {
-                (Au::from_px(4), Au::from_px(1))
-            };
-
-            if thickness > Au::zero() {
-                let gap_factor = if is_display { 3 } else { 1 };
-                let num_gap_min = (thickness * gap_factor).max(Au::from_px(2));
-                let denom_gap_min = (thickness * gap_factor).max(Au::from_px(2));
-                let half_thickness = thickness / 2;
-                let num_shift_up = axis_height + half_thickness + num_gap_min + num_descent;
-                let denom_shift_down = half_thickness + denom_gap_min + denom_ascent - axis_height;
-                (
-                    FractionParameters {
-                        numerator_shift_up: num_shift_up
-                            .max(axis_height + half_thickness + num_gap_min),
-                        denominator_shift_down: denom_shift_down
-                            .max(half_thickness + denom_gap_min),
-                    },
-                    axis_height,
-                    default_thickness,
-                )
-            } else {
-                let gap_min = if is_display {
-                    default_thickness * 7
-                } else {
-                    default_thickness * 3
-                }
-                .max(Au::from_px(7));
-                let mut num_shift_up = Au::zero();
-                let mut denom_shift_down = Au::zero();
-                let actual_gap = (num_shift_up - num_descent) + (denom_shift_down - denom_ascent);
-                if actual_gap < gap_min {
-                    let delta = (gap_min - actual_gap) / 2;
-                    num_shift_up += delta;
-                    denom_shift_down += delta;
-                }
-                (
-                    FractionParameters {
-                        numerator_shift_up: num_shift_up,
-                        denominator_shift_down: denom_shift_down,
-                    },
-                    axis_height,
-                    default_thickness,
-                )
-            }
+            depends_on_block_constraints: numerator_sizes.depends_on_block_constraints
+                || denominator_sizes.depends_on_block_constraints,
         }
     }
 
@@ -346,70 +371,76 @@ impl MathFractionBlock {
         containing_block: &ContainingBlock,
         target_size: Option<(Au, Au)>,
     ) -> MathLayoutOutput {
-        if !self.is_valid() {
+        let Some((numerator, denominator)) = self.fraction_children() else {
             return self.inner_row.layout(
                 layout_context,
                 positioning_context,
                 containing_block,
                 None,
             );
-        }
+        };
 
         let style = &self.base().style;
         let writing_mode = style.writing_mode;
         let layout_style = LayoutStyle::Default(style);
-        let content_box_sizes_and_pbm =
+        let box_sizes =
             layout_style.content_box_sizes_and_padding_border_margin(&containing_block.into());
-        let pbm = content_box_sizes_and_pbm.pbm;
+        let pbm = box_sizes.pbm;
         let physical_padding = pbm.padding.to_physical(writing_mode);
         let physical_border = pbm.border.to_physical(writing_mode);
 
-        let num_box = self.numerator.as_ref().unwrap();
-        let denom_box = self.denominator.as_ref().unwrap();
         let constraint_space = ConstraintSpace::new(SizeConstraint::default(), style, None);
-        let num_sizes = num_box
+
+        let numerator_sizes = numerator
             .borrow()
             .inline_content_sizes(layout_context, &constraint_space);
-        let denom_sizes = denom_box
+        let denominator_sizes = denominator
             .borrow()
             .inline_content_sizes(layout_context, &constraint_space);
-        let num_cb = ContainingBlock {
+
+        let numerator_cb = ContainingBlock {
             size: ContainingBlockSize {
-                inline: num_sizes.sizes.max_content,
+                inline: numerator_sizes.sizes.max_content,
                 block: containing_block.size.block,
             },
             style: containing_block.style,
         };
-        let denom_cb = ContainingBlock {
+        let denominator_cb = ContainingBlock {
             size: ContainingBlockSize {
-                inline: denom_sizes.sizes.max_content,
+                inline: denominator_sizes.sizes.max_content,
                 block: containing_block.size.block,
             },
             style: containing_block.style,
         };
-        // Layout numerator with target_size, denominator unconstrained (MathML Core §3.3.2.1)
-        let mut num_out = num_box.borrow().layout(
+
+        // Only the numerator receives the stretch target.
+        let mut numerator_output = numerator.borrow().layout(
             layout_context,
             positioning_context,
-            &num_cb,
+            &numerator_cb,
             target_size,
         );
-        let mut denom_out = denom_box.borrow().layout(
-            layout_context,
-            positioning_context,
-            &denom_cb,
-            None,
-        );
+        let mut denominator_output =
+            denominator
+                .borrow()
+                .layout(layout_context, positioning_context, &denominator_cb, None);
 
         let padding_border_inline = physical_padding.left
             + physical_padding.right
             + physical_border.left
             + physical_border.right;
-        let available_inline_size =
-            Au::zero().max(containing_block.size.inline - padding_border_inline);
+        let padding_border_block = physical_padding.top
+            + physical_padding.bottom
+            + physical_border.top
+            + physical_border.bottom;
 
-        let children_width = num_out.inline_size.max(denom_out.inline_size);
-        let content_width = content_box_sizes_and_pbm.content_box_sizes.inline.resolve(
+        let available_inline_size =
+            (containing_block.size.inline - padding_border_inline).max(Au::zero());
+        let children_width = numerator_output
+            .inline_size
+            .max(denominator_output.inline_size);
+
+        let content_width = box_sizes.content_box_sizes.inline.resolve(
             LogicalAxis::Inline,
             Size::FitContent,
             || containing_block.size.inline,
@@ -421,78 +452,111 @@ impl MathFractionBlock {
         let is_display = style.get_font().math_style == MathStyle::Normal;
         let font_group = layout_context.font_context.font_group(style.clone_font());
         let font = font_group.first(&layout_context.font_context);
+        let font_ref = font.as_ref().map(|font| &***font);
 
-        let initial_default_thickness = font
-            .as_ref()
-            .and_then(|f| f.math_constants(is_display))
-            .map(|c| c.rule_thickness)
-            .unwrap_or_else(|| {
-                font.as_ref()
-                    .and_then(|f| f.metrics.get())
-                    .map(|m| m.underline_size.max(Au::from_px(1)))
-                    .unwrap_or(Au::from_px(1))
-            });
+        // Obtain MATH constants once and use the same snapshot throughout.
+        let math_constants = font_ref.and_then(|font| font.math_constants(is_display));
+        let has_math_constants = math_constants.is_some();
 
-        let thickness = self.resolve_line_thickness(initial_default_thickness);
-
-        let (params, math_axis_height, _) = self.compute_parameters(
-            font.as_ref().map(|f| &**f).map(|v| &**v),
-            is_display,
-            thickness,
-            num_out.descent,
-            denom_out.ascent,
-        );
-
-        // Typographic bounds relative to the fraction baseline (MathML Core §3.3.2)
-        let fraction_ascent = if thickness > Au::zero() {
-            (params.numerator_shift_up + num_out.ascent).max(math_axis_height + thickness / 2)
+        let metrics = if let Some(constants) = math_constants {
+            FractionMetrics {
+                axis_height: constants.axis_height,
+                default_thickness: constants.rule_thickness,
+                numerator_shift_up: constants.num_shift_up,
+                denominator_shift_down: constants.denom_shift_down,
+                numerator_gap_min: constants.num_gap_min,
+                denominator_gap_min: constants.denom_gap_min,
+                stack_top_shift_up: constants.stack_top_shift_up,
+                stack_bottom_shift_down: constants.stack_bottom_shift_down,
+                stack_gap_min: constants.stack_gap_min,
+            }
         } else {
-            params.numerator_shift_up + num_out.ascent
-        }
-        .max(Au::zero());
-
-        let fraction_descent = if thickness > Au::zero() {
-            (params.denominator_shift_down + denom_out.descent)
-                .max(thickness / 2 - math_axis_height)
-        } else {
-            params.denominator_shift_down + denom_out.descent
-        }
-        .max(Au::zero());
-
-        let content_block = fraction_ascent + fraction_descent;
-
-        // Position numerator relative to math content box (top-left at (0, 0))
-        let num_x = self.horizontal_offset(content_width, num_out.inline_size, self.num_align);
-        let num_y = fraction_ascent - params.numerator_shift_up - num_out.ascent;
-        translate_fragments(&mut num_out.fragments, num_x, num_y);
-
-        // Position denominator relative to math content box (top-left at (0, 0))
-        let denom_x =
-            self.horizontal_offset(content_width, denom_out.inline_size, self.denom_align);
-        let denom_y = fraction_ascent + params.denominator_shift_down - denom_out.ascent;
-        translate_fragments(&mut denom_out.fragments, denom_x, denom_y);
-
-        // Fraction bar centered at math axis relative to math content box
-        let bar_rect = if thickness > Au::zero() {
-            let bar_y = fraction_ascent - math_axis_height - (thickness / 2);
-            Some(PhysicalRect::new(
-                PhysicalPoint::new(Au::zero(), bar_y),
-                PhysicalSize::new(content_width, thickness),
-            ))
-        } else {
-            None
+            FractionMetrics::new(None, is_display)
         };
 
-        let mut children = Vec::with_capacity(num_out.fragments.len() + denom_out.fragments.len());
-        children.extend(num_out.fragments);
-        children.extend(denom_out.fragments);
+        // Use ordinary font metrics when the font has no MATH table.
+        let metrics = if has_math_constants {
+            metrics
+        } else {
+            let (axis_height, default_thickness) = font_ref
+                .and_then(|font| font.metrics.get())
+                .map(|metrics| {
+                    let axis_height = if metrics.x_height > Au::zero() {
+                        metrics.x_height / 2
+                    } else {
+                        metrics.ascent / 3
+                    };
 
-        let padding_border_block = physical_padding.top
-            + physical_padding.bottom
-            + physical_border.top
-            + physical_border.bottom;
-        let total_inline = content_width + padding_border_inline;
-        let total_block = content_block + padding_border_block;
+                    (axis_height, metrics.underline_size.max(Au::from_px(1)))
+                })
+                .unwrap_or((Au::from_px(4), Au::from_px(1)));
+
+            FractionMetrics {
+                axis_height,
+                default_thickness,
+                stack_gap_min: (default_thickness * if is_display { 7 } else { 3 })
+                    .max(Au::from_px(7)),
+                ..metrics
+            }
+        };
+
+        let thickness = self.resolve_line_thickness(metrics.default_thickness);
+        let metrics = if has_math_constants {
+            metrics
+        } else {
+            metrics.with_fallback_fraction_parameters(thickness, is_display)
+        };
+
+        let parameters = metrics.compute_parameters(
+            thickness,
+            numerator_output.descent,
+            denominator_output.ascent,
+        );
+
+        let mut fraction_ascent = parameters.numerator_shift_up + numerator_output.ascent;
+        let mut fraction_descent = parameters.denominator_shift_down + denominator_output.descent;
+
+        if thickness > Au::zero() {
+            fraction_ascent = fraction_ascent.max(metrics.axis_height + thickness / 2);
+            fraction_descent = fraction_descent.max(thickness / 2 - metrics.axis_height);
+        }
+
+        let fraction_ascent = fraction_ascent.max(Au::zero());
+        let fraction_descent = fraction_descent.max(Au::zero());
+        let content_block = fraction_ascent + fraction_descent;
+
+        let numerator_x = self
+            .num_align
+            .offset(content_width, numerator_output.inline_size);
+        let numerator_y = fraction_ascent - parameters.numerator_shift_up - numerator_output.ascent;
+        translate_fragments(&mut numerator_output.fragments, numerator_x, numerator_y);
+
+        let denominator_x = self
+            .denom_align
+            .offset(content_width, denominator_output.inline_size);
+        let denominator_y =
+            fraction_ascent + parameters.denominator_shift_down - denominator_output.ascent;
+        translate_fragments(
+            &mut denominator_output.fragments,
+            denominator_x,
+            denominator_y,
+        );
+
+        let bar_rect = (thickness > Au::zero()).then(|| {
+            PhysicalRect::new(
+                PhysicalPoint::new(
+                    Au::zero(),
+                    fraction_ascent - metrics.axis_height - thickness / 2,
+                ),
+                PhysicalSize::new(content_width, thickness),
+            )
+        });
+
+        let mut children = Vec::with_capacity(
+            numerator_output.fragments.len() + denominator_output.fragments.len(),
+        );
+        children.extend(numerator_output.fragments);
+        children.extend(denominator_output.fragments);
 
         let content_rect = LogicalRect {
             start_corner: LogicalVec2 {
@@ -514,7 +578,7 @@ impl MathFractionBlock {
 
         let box_fragment = BoxFragment::new(
             self.base().base_fragment_info.clone(),
-            self.base().style.clone(),
+            style.clone(),
             children,
             content_rect,
             physical_padding,
@@ -529,8 +593,8 @@ impl MathFractionBlock {
                 box_fragment: box_fragment.into(),
                 kind: MathFragmentKind::Fraction { bar_rect },
             }))],
-            inline_size: total_inline,
-            block_size: total_block,
+            inline_size: content_width + padding_border_inline,
+            block_size: content_block + padding_border_block,
             ascent: fraction_baseline,
             descent: fraction_descent + physical_padding.bottom + physical_border.bottom,
         }
