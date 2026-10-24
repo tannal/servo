@@ -96,15 +96,34 @@ impl<'a, 'dom> TraversalHandler<'dom> for MathTraversalBuilder<'a, 'dom> {
                 if let Contents::NonReplaced(non_replaced) = contents {
                     non_replaced.traverse(self.context, info, &mut block_builder);
                 }
-                if let BlockContainer::InlineFormattingContext(ifc) = block_builder.finish() {
-                    let operator_block = MathOperatorBlock::construct(info, ifc);
-                    let level_box =
-                        ArcRefCell::new(MathLevelBox::Operator(ArcRefCell::new(operator_block)));
-                    box_slot.set(LayoutBox::MathLevel(level_box.clone()));
-                    self.children.push(level_box);
-                }
+                let level_box = match block_builder.finish() {
+                    BlockContainer::InlineFormattingContext(ifc) => {
+                        let operator_block = MathOperatorBlock::construct(info, ifc);
+                        ArcRefCell::new(MathLevelBox::Operator(ArcRefCell::new(operator_block)))
+                    },
+                    block_container => {
+                        // Fallback when <mo> is empty or forced into a BFC (e.g. by overflow: hidden)
+                        let bfc = BlockFormattingContext::from_block_container(block_container);
+                        let contents = IndependentFormattingContextContents::Flow(bfc);
+                        let independent_fc = IndependentFormattingContext::new(
+                            LayoutBoxBase::new(info.into(), info.style.clone()),
+                            contents,
+                            self.propagated_data,
+                        );
+                        let text_block = MathTextBlock {
+                            base: LayoutBoxBase::new(info.into(), info.style.clone()),
+                            formatting_context: independent_fc,
+                        };
+                        ArcRefCell::new(MathLevelBox::Text(ArcRefCell::new(text_block)))
+                    },
+                };
+                box_slot.set(LayoutBox::MathLevel(level_box.clone()));
+                self.children.push(level_box);
             },
-            Some(&local_name!("mi")) | Some(&local_name!("mn")) | Some(&local_name!("mtext")) => {
+            Some(&local_name!("mi")) |
+            Some(&local_name!("mn")) |
+            Some(&local_name!("ms")) |
+            Some(&local_name!("mtext")) => {
                 // Integration point: Delegate to BlockContainerBuilder to support HTML/SVG subtrees inside mtext.
                 let mut block_builder =
                     BlockContainerBuilder::new(self.context, info, self.propagated_data);

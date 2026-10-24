@@ -609,21 +609,20 @@ impl Fragment {
             },
             Fragment::Math(math_fragment) => {
                 let box_fragment = &math_fragment.box_fragment;
-                if mode == StackingContextBuildMode::SkipHoisted &&
-                    box_fragment.style().get_box().position.is_absolutely_positioned()
+                if box_fragment
+                    .style()
+                    .get_box()
+                    .position
+                    .is_absolutely_positioned()
                 {
                     return;
                 }
-            
+
                 box_fragment.build_stacking_context_tree(
-                    Fragment::Box(box_fragment.clone()),
                     stacking_context_tree,
-                    containing_block,
                     containing_block_info,
                     stacking_context,
-                    text_decorations,
-                    container_timing_roots,
-                    participates_in_3d_rendering_context,
+                    parent_info,
                 );
             },
             Fragment::LayoutRoot(..) => {
@@ -634,6 +633,7 @@ impl Fragment {
                 let shared_fragment = fragment.borrow();
                 let box_fragment = match shared_fragment.fragment.as_ref() {
                     Some(Fragment::Box(box_fragment)) => box_fragment,
+                    Some(Fragment::Math(math_fragment)) => &math_fragment.box_fragment,
                     _ => unreachable!("Found hoisted box with missing or non-BoxFragment."),
                 };
 

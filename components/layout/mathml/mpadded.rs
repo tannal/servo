@@ -84,15 +84,15 @@ impl MathPaddedBlock {
             &mut tree_counting_caches,
         );
 
-        let parse_attr = |local_name: web_atoms::LocalName| {
+        let parse_attr = |name| {
             element
                 .as_ref()
-                .and_then(|el| match el.attribute(&ns!(), &local_name)? {
-                    AttrValue::LengthPercentage(_, lp) => {
-                        lp.to_computed_value(&to_computed_context)
-                    },
+                .and_then(|el| el.attribute(&ns!(), &name))
+                .and_then(|attr| match attr {
+                    AttrValue::LengthPercentage(_, lp) => lp.as_ref(),
                     _ => None,
                 })
+                .map(|lp| lp.to_computed_value(&to_computed_context))
         };
 
         let lspace = parse_attr(local_name!("lspace"));

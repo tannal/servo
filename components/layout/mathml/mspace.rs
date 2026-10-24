@@ -77,8 +77,10 @@ impl MathSpaceBlock {
             element
                 .as_ref()
                 .and_then(|el| el.attribute(&ns!(), &name))
+                // Guard: only call Stylo's accessor if it's actually a LengthPercentage
+                .filter(|attr| matches!(attr, AttrValue::LengthPercentage(..)))
                 .and_then(AttrValue::as_length_percentage)
-                .and_then(|lp| Some(lp.to_computed_value(&to_computed_context)))
+                .map(|lp| lp.to_computed_value(&to_computed_context))
         };
         let width = parse_attr(local_name!("width"));
         let height = parse_attr(local_name!("height"));
@@ -131,7 +133,10 @@ impl MathSpaceBlock {
             element
                 .as_ref()
                 .and_then(|el| el.attribute(&ns!(), &name))
-                .and_then(AttrValue::as_length_percentage)
+                .and_then(|attr| match attr {
+                    AttrValue::LengthPercentage(_, lp) => lp.as_ref(),
+                    _ => None,
+                })
                 .map(|lp| lp.to_computed_value(&to_computed_context))
         };
         self.width = parse_attr(local_name!("width"));

@@ -9,6 +9,7 @@ use js::rust::HandleObject;
 use script_bindings::codegen::GenericBindings::ElementBinding::ScrollLogicalPosition;
 use script_bindings::codegen::GenericBindings::WindowBinding::ScrollBehavior;
 use script_bindings::str::DOMString;
+use style::attr::AttrValue;
 use style::parser::ParserContext;
 use style::properties::{PropertyDeclaration, longhands};
 use style::stylesheets::{CssRuleType, Origin, UrlExtraData};
@@ -102,15 +103,16 @@ impl VirtualMethods for MathMLElement {
     }
 
     fn attribute_affects_presentational_hints(&self, attr: AttrRef<'_>) -> bool {
-        // TODO(tannal) Add `displaystyle` and `scriptlevel`.
         match attr.local_name() {
-            &local_name!("display") |
-            &local_name!("lspace") |
-            &local_name!("rspace") |
             &local_name!("width") |
             &local_name!("height") |
             &local_name!("depth") |
             &local_name!("linethickness") |
+            &local_name!("display") |
+            &local_name!("displaystyle") |
+            &local_name!("scriptlevel") |
+            &local_name!("lspace") |
+            &local_name!("rspace") |
             &local_name!("mathcolor") |
             &local_name!("mathbackground") |
             &local_name!("mathsize") |

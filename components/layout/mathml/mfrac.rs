@@ -252,7 +252,10 @@ impl MathFractionBlock {
                 element
                     .as_ref()
                     .and_then(|element| element.attribute(&ns!(), &local_name!("linethickness")))
-                    .and_then(AttrValue::as_length_percentage)
+                    .and_then(|attr| match attr {
+                        AttrValue::LengthPercentage(_, lp) => lp.as_ref(),
+                        _ => None,
+                    })
                     .map(|value| value.to_computed_value(computed_context))
             },
         );
