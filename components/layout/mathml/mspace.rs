@@ -210,8 +210,12 @@ impl MathSpaceBlock {
             + physical_padding.bottom
             + physical_border.top
             + physical_border.bottom;
-        let total_inline = width + padding_border_inline;
-        let total_block = height + depth + padding_border_block;
+        let physical_margin = pbm.margin.auto_is(Au::zero).to_physical(writing_mode);
+        let margin_inline = physical_margin.left + physical_margin.right;
+        let margin_block = physical_margin.top + physical_margin.bottom;
+
+        let total_inline = width + padding_border_inline + margin_inline;
+        let total_block = height + depth + padding_border_block + margin_block;
         // Content box: size is (width, height + depth), offset by padding-start + border-start
         let content_rect = LogicalRect {
             start_corner: LogicalVec2 {

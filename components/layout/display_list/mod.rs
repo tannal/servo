@@ -892,7 +892,10 @@ impl PaintTraversalHandler for DisplayListBuilder<'_> {
             return;
         }
         let rect = match fragment.math_paint_info() {
-            Some(MathPaintInfo::Fraction { bar_rect }) => bar_rect,
+            Some(MathPaintInfo::Fraction { mut bar_rect }) => {
+                bar_rect.size.height = bar_rect.size.height.max(Au::from_px(1));
+                bar_rect
+            },
             Some(MathPaintInfo::Radical { rule_rect }) => rule_rect,
             None => return,
         };
