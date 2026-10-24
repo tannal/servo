@@ -17,6 +17,7 @@ use style::values::specified::{FontSize, LengthPercentage};
 use style_traits::ParsingMode;
 use stylo_dom::ElementState;
 
+use crate::dom::NodeDamage;
 use crate::dom::bindings::codegen::Bindings::HTMLOrSVGOrMathMLElementBinding::FocusOptions;
 use crate::dom::bindings::codegen::Bindings::MathMLElementBinding::MathMLElementMethods;
 use crate::dom::bindings::inheritance::Castable;
@@ -80,13 +81,13 @@ impl VirtualMethods for MathMLElement {
 
     fn parse_plain_attribute(&self, name: &LocalName, value: DOMString) -> AttrValue {
         match *name {
-            local_name!("width") |
-            local_name!("height") |
-            local_name!("depth") |
-            local_name!("linethickness") |
-            local_name!("lspace") |
-            local_name!("rspace") |
-            local_name!("voffset") => {
+            local_name!("width")
+            | local_name!("height")
+            | local_name!("depth")
+            | local_name!("linethickness")
+            | local_name!("lspace")
+            | local_name!("rspace")
+            | local_name!("voffset") => {
                 let value_str = &value.str();
                 let parser = &mut cssparser::Parser::new(value_str);
                 let doc = self.owner_document();
@@ -105,7 +106,7 @@ impl VirtualMethods for MathMLElement {
                 let val = LengthPercentage::parse_quirky(
                     &context,
                     parser,
-                    style::values::specified::AllowQuirks::Always,
+                    style::values::specified::AllowQuirks::No,
                 );
                 AttrValue::LengthPercentage(value_str.to_string(), val.ok())
             },
@@ -127,8 +128,8 @@ impl VirtualMethods for MathMLElement {
             .attribute_mutated(cx, attr, mutation);
 
         let element = self.as_element();
-        if let (&local_name!("nonce"), mutation) = (attr.local_name(), mutation) {
-            match mutation {
+        match *attr.local_name() {
+            local_name!("nonce") => match mutation {
                 AttributeMutation::Set(..) => {
                     let nonce = &**attr.value();
                     element.update_nonce_internal_slot(nonce.to_owned(), cx.no_gc());
@@ -136,25 +137,35 @@ impl VirtualMethods for MathMLElement {
                 AttributeMutation::Removed => {
                     element.update_nonce_internal_slot(String::new(), cx.no_gc());
                 },
-            }
+            },
+            local_name!("linethickness")
+            | local_name!("width")
+            | local_name!("height")
+            | local_name!("depth")
+            | local_name!("lspace")
+            | local_name!("rspace")
+            | local_name!("voffset") => {
+                self.upcast::<Node>().dirty(cx.no_gc(), NodeDamage::Other);
+            },
+            _ => {},
         }
     }
 
     fn attribute_affects_presentational_hints(&self, attr: AttrRef<'_>) -> bool {
         match attr.local_name() {
-            &local_name!("width") |
-            &local_name!("height") |
-            &local_name!("depth") |
-            &local_name!("linethickness") |
-            &local_name!("display") |
-            &local_name!("displaystyle") |
-            &local_name!("scriptlevel") |
-            &local_name!("lspace") |
-            &local_name!("rspace") |
-            &local_name!("mathcolor") |
-            &local_name!("mathbackground") |
-            &local_name!("mathsize") |
-            &local_name!("dir") => true,
+            &local_name!("width")
+            | &local_name!("height")
+            | &local_name!("depth")
+            | &local_name!("linethickness")
+            | &local_name!("display")
+            | &local_name!("displaystyle")
+            | &local_name!("scriptlevel")
+            | &local_name!("lspace")
+            | &local_name!("rspace")
+            | &local_name!("mathcolor")
+            | &local_name!("mathbackground")
+            | &local_name!("mathsize")
+            | &local_name!("dir") => true,
             _ => self
                 .super_type()
                 .unwrap()
@@ -272,8 +283,8 @@ impl<'dom> LayoutDom<'dom, MathMLElement> {
         if let Some(value) = element.get_attr_val_for_layout(&ns!(), &LocalName::from(attr_name)) {
             let mut parser = cssparser::Parser::new(value);
             if let Ok(property) =
-                parser.parse_entirely(|parse_input| parse(parser_context, parse_input)) &&
-                predicate(&property)
+                parser.parse_entirely(|parse_input| parse(parser_context, parse_input))
+                && predicate(&property)
             {
                 push(property);
             }
