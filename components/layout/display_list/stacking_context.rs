@@ -146,8 +146,8 @@ impl StackingContextParentInfo {
         // > Note that text decorations are not propagated to floating and absolutely
         // > positioned descendants, nor to the contents of atomic inline-level descendants
         // > such as inline blocks and inline tables.
-        let inherited_text_decorations = if fragment.is_atomic_inline_level() ||
-            fragment
+        let inherited_text_decorations = if fragment.is_atomic_inline_level()
+            || fragment
                 .base
                 .flags
                 .contains(FragmentFlags::IS_OUTSIDE_LIST_ITEM_MARKER)
@@ -404,8 +404,8 @@ impl StackingContextTree {
             .cumulative_content_box_rect(
                 CumulativeContentRectCalculation::AlreadyDoneWithStackingContextTree,
             )
-            .origin -
-            reference_frame_origin.cast_unit();
+            .origin
+            - reference_frame_origin.cast_unit();
 
         // Use that to find the offset from the fragment origin.
         Some(transformed_point - fragment_origin)
@@ -607,24 +607,6 @@ impl Fragment {
                     parent_info,
                 );
             },
-            Fragment::Math(math_fragment) => {
-                let box_fragment = &math_fragment.box_fragment;
-                if box_fragment
-                    .style()
-                    .get_box()
-                    .position
-                    .is_absolutely_positioned()
-                {
-                    return;
-                }
-
-                box_fragment.build_stacking_context_tree(
-                    stacking_context_tree,
-                    containing_block_info,
-                    stacking_context,
-                    parent_info,
-                );
-            },
             Fragment::LayoutRoot(..) => {
                 // These fragments are processed at their originating
                 // `Fragment::AbsoluteOrFixedPositionedPlaceholder` position.
@@ -633,7 +615,6 @@ impl Fragment {
                 let shared_fragment = fragment.borrow();
                 let box_fragment = match shared_fragment.fragment.as_ref() {
                     Some(Fragment::Box(box_fragment)) => box_fragment,
-                    Some(Fragment::Math(math_fragment)) => &math_fragment.box_fragment,
                     _ => unreachable!("Found hoisted box with missing or non-BoxFragment."),
                 };
 
@@ -1255,10 +1236,10 @@ impl BoxFragment {
             return None;
         }
 
-        if offsets.top.is_auto() &&
-            offsets.right.is_auto() &&
-            offsets.bottom.is_auto() &&
-            offsets.left.is_auto()
+        if offsets.top.is_auto()
+            && offsets.right.is_auto()
+            && offsets.bottom.is_auto()
+            && offsets.left.is_auto()
         {
             return None;
         }

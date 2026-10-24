@@ -13,7 +13,7 @@ use style::attr::AttrValue;
 use style::parser::ParserContext;
 use style::properties::{PropertyDeclaration, longhands};
 use style::stylesheets::{CssRuleType, Origin, UrlExtraData};
-use style::values::specified::FontSize;
+use style::values::specified::{FontSize, LengthPercentage};
 use style_traits::ParsingMode;
 use stylo_dom::ElementState;
 
@@ -76,6 +76,44 @@ impl MathMLElement {
 impl VirtualMethods for MathMLElement {
     fn super_type(&self) -> Option<&dyn VirtualMethods> {
         Some(self.as_element() as &dyn VirtualMethods)
+    }
+
+    fn parse_plain_attribute(&self, name: &LocalName, value: DOMString) -> AttrValue {
+        match *name {
+            local_name!("width") |
+            local_name!("height") |
+            local_name!("depth") |
+            local_name!("linethickness") |
+            local_name!("lspace") |
+            local_name!("rspace") |
+            local_name!("voffset") => {
+                let value_str = &value.str();
+                let parser = &mut cssparser::Parser::new(value_str);
+                let doc = self.owner_document();
+                let url = doc.url().into_url().into();
+                let context = ParserContext::new(
+                    Origin::Author,
+                    &url,
+                    None,
+                    ParsingMode::DEFAULT,
+                    doc.quirks_mode(),
+                    Default::default(),
+                    None,
+                    None,
+                    Default::default(),
+                );
+                let val = LengthPercentage::parse_quirky(
+                    &context,
+                    parser,
+                    style::values::specified::AllowQuirks::Always,
+                );
+                AttrValue::LengthPercentage(value_str.to_string(), val.ok())
+            },
+            _ => self
+                .super_type()
+                .unwrap()
+                .parse_plain_attribute(name, value),
+        }
     }
 
     fn attribute_mutated(

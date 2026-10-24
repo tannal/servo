@@ -29,7 +29,7 @@ use crate::context::LayoutContext;
 use crate::dom::WeakLayoutBox;
 use crate::dom_traversal::NodeAndStyleInfo;
 use crate::formatting_contexts::Baselines;
-use crate::fragment_tree::{BoxFragment, Fragment, MathFragment, MathFragmentKind};
+use crate::fragment_tree::{BoxFragment, Fragment, MathPaintInfo};
 use crate::geom::{LogicalRect, LogicalVec2, PhysicalPoint, PhysicalRect, PhysicalSize};
 use crate::layout_box_base::LayoutBoxBase;
 use crate::mathml::{MathLayoutOutput, translate_fragments};
@@ -244,20 +244,10 @@ impl MathFractionBlock {
             };
         }
 
-        let element = node_and_style_info.node.as_element();
-        let linethickness = compute_line_thickness(
+        let linethickness = Self::resolve_linethickness_attr(
+            node_and_style_info.node.as_element(),
             &context.style_context,
             &node_and_style_info.style,
-            |computed_context| {
-                element
-                    .as_ref()
-                    .and_then(|element| element.attribute(&ns!(), &local_name!("linethickness")))
-                    .and_then(|attr| match attr {
-                        AttrValue::LengthPercentage(_, lp) => lp.as_ref(),
-                        _ => None,
-                    })
-                    .map(|value| value.to_computed_value(computed_context))
-            },
         );
 
         let numerator_index = in_flow_indices[0];
@@ -284,6 +274,42 @@ impl MathFractionBlock {
             num_align: FractionAlignment::Center,
             denom_align: FractionAlignment::Center,
         }
+    }
+
+    fn resolve_linethickness_attr<'dom, E>(
+        element: Option<E>,
+        context: &SharedStyleContext,
+        style: &ServoArc<ComputedValues>,
+    ) -> Option<LengthPercentage>
+    where
+        E: LayoutElement<'dom>,
+    {
+        let binding = element?;
+        let attr = binding.attribute(&ns!(), &local_name!("linethickness"))?;
+        let specified = match attr {
+            AttrValue::LengthPercentage(_, lp) => lp.as_ref()?,
+            _ => return None,
+        };
+        let mut rule_cache_conditions = RuleCacheConditions::default();
+        let mut tree_counting_caches = TreeCountingCaches::default();
+        let style_builder = StyleBuilder::new(
+            context.stylist.device(),
+            Some(context.stylist),
+            Some(style),
+            None,
+            None,
+            false,
+        );
+        let computed_context = Context::new(
+            style_builder,
+            context.quirks_mode(),
+            &mut rule_cache_conditions,
+            ContainerSizeQuery::none(),
+            RuleCascadeFlags::empty(),
+            &DummyElementContext,
+            &mut tree_counting_caches,
+        );
+        Some(specified.to_computed_value(&computed_context))
     }
 
     pub(crate) fn base(&self) -> &LayoutBoxBase {
@@ -319,14 +345,8 @@ impl MathFractionBlock {
     ) {
         self.inner_row.repair_style(context, node, new_style);
 
-        let element = node.as_element();
-        self.linethickness = compute_line_thickness(context, new_style, |computed_context| {
-            element
-                .as_ref()
-                .and_then(|element| element.attribute(&ns!(), &local_name!("linethickness")))
-                .and_then(AttrValue::as_length_percentage)
-                .map(|value| value.to_computed_value(computed_context))
-        });
+        self.linethickness =
+            Self::resolve_linethickness_attr(node.as_element(), context, new_style);
     }
 
     pub(crate) fn attached_to_tree(&self, layout_box: WeakLayoutBox) {
@@ -464,7 +484,7 @@ impl MathFractionBlock {
         let metrics = if let Some(constants) = math_constants {
             FractionMetrics {
                 axis_height: constants.axis_height,
-                default_thickness: constants.rule_thickness,
+                default_thickness: constants.rule_thickness.max(Au::from_px(1)),
                 numerator_shift_up: constants.num_shift_up,
                 denominator_shift_down: constants.denom_shift_down,
                 numerator_gap_min: constants.num_gap_min,
@@ -503,7 +523,7 @@ impl MathFractionBlock {
             }
         };
 
-        let thickness = self.resolve_line_thickness(metrics.default_thickness);
+        let thickness = self.resolve_line_thickness(metrics.default_thickness).max(Au::from_px(1));
         let metrics = if has_math_constants {
             metrics
         } else {
@@ -589,13 +609,11 @@ impl MathFractionBlock {
             pbm.margin.auto_is(Au::zero).to_physical(writing_mode),
             None,
         )
-        .with_baselines(baselines);
+        .with_baselines(baselines)
+        .with_math_paint_info(bar_rect.map(|bar_rect| MathPaintInfo::Fraction { bar_rect }));
 
         MathLayoutOutput {
-            fragments: vec![Fragment::Math(Arc::new(MathFragment {
-                box_fragment: box_fragment.into(),
-                kind: MathFragmentKind::Fraction { bar_rect },
-            }))],
+            fragments: vec![Fragment::Box(Arc::new(box_fragment))],
             inline_size: content_width + padding_border_inline,
             block_size: content_block + padding_border_block,
             ascent: fraction_baseline,

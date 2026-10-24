@@ -15,7 +15,8 @@ use crate::display_list::{
     StackingContext, StackingContextFragments,
 };
 use crate::fragment_tree::{
-    BoxFragment, BoxFragmentWithStyle, Fragment, FragmentFlags, IFrameFragment, ImageFragment, MathFragment, PositioningFragment, Tag, TextFragment,
+    BoxFragment, BoxFragmentWithStyle, Fragment, FragmentFlags, IFrameFragment, ImageFragment,
+    PositioningFragment, Tag, TextFragment,
 };
 use crate::geom::{PhysicalPoint, PhysicalRect};
 use crate::style_ext::ComputedValuesExt;
@@ -178,6 +179,12 @@ impl<'a, Handler: PaintTraversalHandler> PaintTraversal<'a, Handler> {
                 state, root, true, /* at_root_of_stacking_context */
             );
         }
+        // MathML Core places extra graphics after the text and backgrounds,
+        // before the following positioned stacking contexts. This also runs
+        // for empty fractions, which may have no inline content to traverse.
+        if root.math_paint_info().is_some() {
+            self.handler.visit_box_for_math_paint(&inner_state, root);
+        }
     }
 
     /// An implementation of
@@ -249,7 +256,10 @@ impl<'a, Handler: PaintTraversalHandler> PaintTraversal<'a, Handler> {
                 // In normal HTML, we will process inline atomics during the inline level and replaced traversal.
                 // In MathML, §3.1.4 mandates that in-flow children paint like block elements,
                 // so we must NOT skip them when state.is_inside_math is true.
-                if !state.is_inside_math && (box_fragment.is_atomic_inline_level() || box_fragment.is_flex_or_grid_item()) {
+                if !state.is_inside_math
+                    && (box_fragment.is_atomic_inline_level()
+                        || box_fragment.is_flex_or_grid_item())
+                {
                     return true;
                 }
 
@@ -298,19 +308,6 @@ impl<'a, Handler: PaintTraversalHandler> PaintTraversal<'a, Handler> {
                     }
                 }
             },
-            Fragment::Math(math_fragment) => {
-                let box_fragment = &math_fragment.box_fragment.with_style();
-                if box_fragment.stacking_context_type().is_some() {
-                    return false;
-                }
-                self.handle_box(state, box_fragment);
-                let mut state_for_children = state.push_box_fragment(box_fragment);
-                state_for_children.is_inside_math = true;
-                for child in box_fragment.children.iter() {
-                    saw_inline_level_or_replaced |= self
-                        .traverse_block_level_descendants_decorations(&state_for_children, child);
-                }
-            },
             Fragment::AbsoluteOrFixedPositionedPlaceholder(..)
             | Fragment::Text(..)
             | Fragment::Image(..)
@@ -349,6 +346,10 @@ impl<'a, Handler: PaintTraversalHandler> PaintTraversal<'a, Handler> {
                 child,
                 false, /* at_root_of_stacking_context */
             );
+        }
+        if !at_root_of_stacking_context && fragment.math_paint_info().is_some() {
+            self.handler
+                .visit_box_for_math_paint(&inner_state, fragment);
         }
     }
 
@@ -405,18 +406,6 @@ impl<'a, Handler: PaintTraversalHandler> PaintTraversal<'a, Handler> {
                     }
                 }
             },
-            Fragment::Math(math_fragment) => {
-                if math_fragment.box_fragment.stacking_context_type().is_some() {
-                    return;
-                }
-                let box_fragment = &math_fragment.box_fragment.with_style();
-                self.traverse_line_boxes_and_replaced_for_box(
-                    state,
-                    box_fragment,
-                    at_root_of_stacking_context,
-                );
-                self.handler.visit_math(state, math_fragment);
-            },
             Fragment::AbsoluteOrFixedPositionedPlaceholder(_)
             | Fragment::Float(..)
             | Fragment::IFrame(_)
@@ -443,19 +432,6 @@ impl<'a, Handler: PaintTraversalHandler> PaintTraversal<'a, Handler> {
                 line_box_rect,
                 false, /* at_stacking_context_root */
             ),
-            Fragment::Math(math_fragment) => {
-                if math_fragment.box_fragment.stacking_context_type().is_some() {
-                    return;
-                }
-                let box_fragment = &math_fragment.box_fragment.with_style();
-                self.traverse_box_in_a_line_box(
-                    state,
-                    box_fragment,
-                    line_box_rect,
-                    false, /* at_stacking_context_root */
-                );
-                self.handler.visit_math(state, math_fragment);
-            },
             Fragment::Text(text_fragment) => {
                 self.handler.visit_text(state, line_box_rect, text_fragment);
             },
@@ -582,7 +558,14 @@ pub(crate) trait PaintTraversalHandler {
         stacking_context_state: Self::StackingContextState,
     );
 
-    fn visit_math(&mut self, state: &TraversalState, fragment: &Arc<MathFragment>);
+    /// Paint extra mathematical graphics. State is relative to the box's content.
+    /// These graphics do not create an additional hit-test target.
+    fn visit_box_for_math_paint(
+        &mut self,
+        _state: &TraversalState,
+        _fragment: &BoxFragmentWithStyle<'_>,
+    ) {
+    }
 
     fn visit_box(&mut self, state: &TraversalState, fragment: &BoxFragmentWithStyle<'_>);
     fn visit_iframe(&mut self, _state: &TraversalState, _fragment: &Arc<IFrameFragment>) {}
@@ -661,10 +644,11 @@ impl TraversalState {
         //
         // Also do not propagate text decorations to floats or replaced content.
         let mut propagated_text_decorations = self.text_decorations.clone();
-        if box_fragment.is_atomic_inline_level() ||
-            box_fragment.base.flags.contains(
-                FragmentFlags::IS_OUTSIDE_LIST_ITEM_MARKER | FragmentFlags::IS_REPLACED,
-            )
+        if box_fragment.is_atomic_inline_level()
+            || box_fragment
+                .base
+                .flags
+                .contains(FragmentFlags::IS_OUTSIDE_LIST_ITEM_MARKER | FragmentFlags::IS_REPLACED)
         {
             propagated_text_decorations = Default::default();
         }
@@ -709,7 +693,8 @@ impl TraversalState {
             } else {
                 self.containing_element_tag
             },
-            is_inside_math: self.is_inside_math || style.get_box().display.inside() == stylo::DisplayInside::Math,
+            is_inside_math: self.is_inside_math
+                || style.get_box().display.inside() == stylo::DisplayInside::Math,
         }
     }
 
@@ -739,8 +724,8 @@ impl TraversalState {
             spatial_id: self.spatial_id,
             clip_id: self.clip_id,
             text_decorations: self.text_decorations.clone(),
-            accumulated_opacity: self.accumulated_opacity *
-                positioning_fragment.style.borrow().slow_clone_opacity(),
+            accumulated_opacity: self.accumulated_opacity
+                * positioning_fragment.style.borrow().slow_clone_opacity(),
             containing_element_tag: self.containing_element_tag,
             container_timing_roots: self.container_timing_roots.clone(),
             is_inside_math: self.is_inside_math,
@@ -753,8 +738,8 @@ impl TraversalState {
             spatial_id: stacking_context.scroll_tree_node_id,
             clip_id: stacking_context.clip_id,
             text_decorations: stacking_context.text_decorations.clone(),
-            accumulated_opacity: self.accumulated_opacity *
-                stacking_context
+            accumulated_opacity: self.accumulated_opacity
+                * stacking_context
                     .fragment()
                     .map_or(1.0, |fragment| fragment.style().slow_clone_opacity()),
             containing_element_tag: self.containing_element_tag,

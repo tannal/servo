@@ -62,8 +62,8 @@ use crate::display_list::paint_traversal::{PaintTraversal, PaintTraversalHandler
 use crate::fragment_tree::{
     BackgroundMode, BaseFragment, BoxFragment, BoxFragmentWithStyle,
     CumulativeContentRectCalculation, Fragment, FragmentFlags, FragmentStatus, FragmentTree,
-    IFrameFragment, ImageFragment, PositioningFragment, SpecificLayoutInfo, Tag, TextFragment,
-    MathFragment, MathFragmentKind,
+    IFrameFragment, ImageFragment, MathPaintInfo, PositioningFragment, SpecificLayoutInfo, Tag,
+    TextFragment,
 };
 use crate::geom::{
     LengthPercentageOrAuto, PhysicalPoint, PhysicalRect, PhysicalSides, PhysicalSize,
@@ -451,9 +451,9 @@ impl DisplayListBuilder<'_> {
             .used_transform_style(fragment.base.flags)
             .to_webrender();
 
-        if !style.has_effective_transform_or_perspective(FragmentFlags::empty()) &&
-            (transform_style == TransformStyle::Flat &&
-                !stacking_context.participates_in_a_3d_rendering_context)
+        if !style.has_effective_transform_or_perspective(FragmentFlags::empty())
+            && (transform_style == TransformStyle::Flat
+                && !stacking_context.participates_in_a_3d_rendering_context)
         {
             return false;
         }
@@ -517,12 +517,12 @@ impl DisplayListBuilder<'_> {
 
                 // WebRender only uses the stacking context to apply certain effects. If we don't
                 // actually need to create a stacking context, just avoid creating one.
-                if !is_blend_container &&
-                    effects.filter.0.is_empty() &&
-                    effects.backdrop_filter.0.is_empty() &&
-                    effects.opacity == 1.0 &&
-                    effects.mix_blend_mode == ComputedMixBlendMode::Normal &&
-                    style.get_svg().clip_path == ComputedClipPath::None
+                if !is_blend_container
+                    && effects.filter.0.is_empty()
+                    && effects.backdrop_filter.0.is_empty()
+                    && effects.opacity == 1.0
+                    && effects.mix_blend_mode == ComputedMixBlendMode::Normal
+                    && style.get_svg().clip_path == ComputedClipPath::None
                 {
                     return false;
                 }
@@ -868,8 +868,8 @@ impl PaintTraversalHandler for DisplayListBuilder<'_> {
     fn visit_box(&mut self, state: &TraversalState, fragment: &BoxFragmentWithStyle<'_>) {
         fragment.base.visit_fragment(self);
 
-        if let Some(mut inspector_highlight) = self.inspector_highlight.take() &&
-            fragment.base.tag == Some(inspector_highlight.tag)
+        if let Some(mut inspector_highlight) = self.inspector_highlight.take()
+            && fragment.base.tag == Some(inspector_highlight.tag)
         {
             inspector_highlight.register_fragment_of_highlighted_dom_node(self, state, fragment);
             self.inspector_highlight = Some(inspector_highlight);
@@ -882,43 +882,25 @@ impl PaintTraversalHandler for DisplayListBuilder<'_> {
         BuilderForBoxFragment::new(fragment, state.origin).build(self, state)
     }
 
-    fn visit_math(&mut self, state: &TraversalState, fragment: &Arc<MathFragment>) {
-        eprintln!("bar");
-        fragment.box_fragment.base.visit_fragment(self);
-    
-        let style = fragment.box_fragment.style();
+    fn visit_box_for_math_paint(
+        &mut self,
+        state: &TraversalState,
+        fragment: &BoxFragmentWithStyle<'_>,
+    ) {
+        let style = fragment.style();
         if style.get_inherited_box().visibility != Visibility::Visible {
             return;
         }
-    
-        // Absolute origin of this MathFragment = parent traversal origin + box fragment offset
-        let fragment_origin = state.origin + fragment.box_fragment.base.rect().origin.to_vector();
-    
-        // Draw MathML-specific geometric primitives (e.g. fraction line)
-        match &fragment.kind {
-            MathFragmentKind::Fraction { bar_rect: Some(bar_rect) } => {
-                let absolute_rect = bar_rect.translate(fragment_origin.to_vector());
-                let common = self.common_properties(state, absolute_rect.to_webrender(), &style);
-                let color = *style.get_color();
-                self.wr().push_rect(
-                    &common,
-                    absolute_rect.to_webrender(),
-                    rgba(color),
-                );
-            },
-            MathFragmentKind::Radical { rule_rect: Some(rule_rect) } => {
-                let absolute_rect = rule_rect.translate(fragment_origin.to_vector());
-                let common = self.common_properties(state, absolute_rect.to_webrender(), &style);
-                let color = *style.get_color();
-    
-                self.wr().push_rect(
-                    &common,
-                    absolute_rect.to_webrender(),
-                    rgba(color),
-                );
-            },
-            _ => {},
-        }
+        let rect = match fragment.math_paint_info() {
+            Some(MathPaintInfo::Fraction { bar_rect }) => bar_rect,
+            Some(MathPaintInfo::Radical { rule_rect }) => rule_rect,
+            None => return,
+        };
+        // The traversal state is already relative to this box's content origin
+        // and includes its clipping and spatial nodes.
+        let rect = rect.translate(state.origin.to_vector()).to_webrender();
+        let common = self.common_properties(state, rect, style);
+        self.wr().push_rect(&common, rect, rgba(*style.get_color()));
     }
 
     fn visit_iframe(&mut self, state: &TraversalState, fragment: &Arc<IFrameFragment>) {
@@ -1306,8 +1288,8 @@ impl Fragment {
                 );
 
                 // Accumulate this text fragment for LCP by the containing element's tag
-                if let Some(tag) = state.containing_element_tag &&
-                    builder.largest_contentful_paint_enabled
+                if let Some(tag) = state.containing_element_tag
+                    && builder.largest_contentful_paint_enabled
                 {
                     let transform = builder
                         .paint_info
@@ -1448,9 +1430,9 @@ impl Fragment {
             // the original rectangle.
             if matches!(
                 style,
-                ComputedTextDecorationStyle::Dotted |
-                    ComputedTextDecorationStyle::Dashed |
-                    ComputedTextDecorationStyle::Wavy,
+                ComputedTextDecorationStyle::Dotted
+                    | ComputedTextDecorationStyle::Dashed
+                    | ComputedTextDecorationStyle::Wavy,
             ) {
                 rect.min.x = rect.min.x.min(0.0);
             }
@@ -1526,8 +1508,8 @@ impl Fragment {
         // offsets. This allows updating this selection directly from the DOM (skipping layout).
         let selection_character_range = run_data.map_dom_range_to_transformed_range(selection);
 
-        if fragment.character_range_in_dom_node.start > selection_character_range.end ||
-            fragment.character_range_in_dom_node.end < selection_character_range.start
+        if fragment.character_range_in_dom_node.start > selection_character_range.end
+            || fragment.character_range_in_dom_node.end < selection_character_range.start
         {
             return;
         }
@@ -1536,8 +1518,8 @@ impl Fragment {
         // layout will push an empty fragment in order to trigger painting of the cursor on an empty line.
         // This code ensure that it is only painted if the cursor is on the starting index of the empty
         // fragment.
-        if fragment.is_empty_for_text_cursor &&
-            !fragment
+        if fragment.is_empty_for_text_cursor
+            && !fragment
                 .character_range_in_dom_node
                 .contains(&selection_character_range.start)
         {
@@ -1550,12 +1532,12 @@ impl Fragment {
         let mut end_advance = None;
         for glyph_store in fragment.glyphs.iter() {
             let glyph_store_character_count = glyph_store.character_count();
-            if current_character_index + glyph_store_character_count <
-                selection_character_range.start
+            if current_character_index + glyph_store_character_count
+                < selection_character_range.start
             {
-                current_advance += glyph_store.total_advance() +
-                    (fragment.justification_adjustment *
-                        glyph_store.total_word_separators() as i32);
+                current_advance += glyph_store.total_advance()
+                    + (fragment.justification_adjustment
+                        * glyph_store.total_word_separators() as i32);
                 current_character_index += glyph_store_character_count;
                 continue;
             }
@@ -1811,9 +1793,9 @@ impl<'a> BuilderForBoxFragment<'a> {
             .effective_overflow(self.fragment.base.flags);
         let scrolls_via_user_input =
             |overflow| matches!(overflow, ComputedOverflow::Scroll | ComputedOverflow::Auto);
-        if (scrolls_via_user_input(overflow.x) || scrolls_via_user_input(overflow.y)) &&
-            self.fragment.style().get_inherited_ui().pointer_events !=
-                style::computed_values::pointer_events::T::None
+        if (scrolls_via_user_input(overflow.x) || scrolls_via_user_input(overflow.y))
+            && self.fragment.style().get_inherited_ui().pointer_events
+                != style::computed_values::pointer_events::T::None
         {
             let mut inner_state = state.clone();
             inner_state.spatial_id = self
@@ -1929,8 +1911,8 @@ impl<'a> BuilderForBoxFragment<'a> {
             return;
         }
         // If the `<body>` background was inherited by the root element, don't paint it again here.
-        if !builder.paint_body_background &&
-            flags.intersects(FragmentFlags::IS_BODY_ELEMENT_OF_HTML_ELEMENT_ROOT)
+        if !builder.paint_body_background
+            && flags.intersects(FragmentFlags::IS_BODY_ELEMENT_OF_HTML_ELEMENT_ROOT)
         {
             return;
         }
@@ -2785,10 +2767,10 @@ impl BoxFragment {
     fn border_radius(&self) -> BorderRadius {
         let style = self.style();
         let border = style.get_border();
-        if border.border_top_left_radius.0.is_zero() &&
-            border.border_top_right_radius.0.is_zero() &&
-            border.border_bottom_right_radius.0.is_zero() &&
-            border.border_bottom_left_radius.0.is_zero()
+        if border.border_top_left_radius.0.is_zero()
+            && border.border_top_right_radius.0.is_zero()
+            && border.border_bottom_right_radius.0.is_zero()
+            && border.border_bottom_left_radius.0.is_zero()
         {
             return BorderRadius::zero();
         }

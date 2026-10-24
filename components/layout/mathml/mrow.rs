@@ -13,7 +13,7 @@ use crate::dom::{BoxSlot, LayoutBox, WeakLayoutBox};
 use crate::dom_traversal::{BoxTreeString, Contents, NodeAndStyleInfo, TraversalHandler};
 use crate::formatting_contexts::Baselines;
 use crate::fragment_tree::{
-    BaseFragmentInfo, BoxFragment, Fragment, MathFragment, MathFragmentKind,
+    BaseFragmentInfo, BoxFragment, Fragment,
 };
 use crate::geom::{LogicalRect, LogicalVec2, PhysicalVec, ToLogicalWithContainingBlock};
 use crate::layout_box_base::LayoutBoxBase;

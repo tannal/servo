@@ -73,12 +73,27 @@ pub(crate) struct BlockLevelLayoutInfo {
     pub block_margins_collapsed_with_children: CollapsedBlockMargins,
 }
 
+#[derive(Clone, Copy, Debug, MallocSizeOf)]
+pub(crate) enum MathPaintInfo {
+    /// Rectangle relative to the owning box's content origin.
+    Fraction { bar_rect: PhysicalRect<Au> },
+
+    /// Overbar rectangle relative to the owning box's content origin.
+    /// Radical glyph painting needs additional data when implemented.
+    Radical { rule_rect: PhysicalRect<Au> },
+}
+
 #[derive(Clone, Default, MallocSizeOf)]
 pub(crate) struct BoxFragmentRareData {
     /// The resolved box insets if this box is `position: sticky`. These are calculated
     /// during `StackingContextTree` construction because they rely on the size of the
     /// scroll container.
     pub(crate) resolved_sticky_insets: Option<Box<PhysicalSides<AuOrAuto>>>,
+
+    /// Paint bars for MathML <mfrac>, <msqrt> etc.
+    /// Content-relative mathematical graphics produced by layout. These survive
+    /// stacking-context construction and use the owning box's style when painted.
+    pub math_paint_info: Option<Box<MathPaintInfo>>,
 
     /// Information that is specific to a layout system (e.g., grid, table, etc.).
     pub specific_layout_info: Option<SpecificLayoutInfo>,
@@ -100,6 +115,7 @@ impl BoxFragmentRareData {
             .map(|info| {
                 OnceBox::with_value(Box::new(AtomicRefCell::new(BoxFragmentRareData {
                     resolved_sticky_insets: None,
+                    math_paint_info: None,
                     specific_layout_info: Some(info),
                     generated_clip_id: None,
                     generated_scroll_tree_node_id: None,
@@ -188,6 +204,23 @@ impl BoxFragment {
     pub(crate) fn with_baselines(mut self, baselines: Baselines) -> Self {
         self.baselines = baselines;
         self
+    }
+
+    pub(crate) fn with_math_paint_info(self, info: Option<MathPaintInfo>) -> Self {
+        if info.is_some() || self.rare_data.get().is_some() {
+            self.ensure_rare_data().math_paint_info = info.map(Box::new);
+        }
+        self
+    }
+
+    /// Copy the small paint payload so painting does not hold a rare-data borrow.
+    pub(crate) fn math_paint_info(&self) -> Option<MathPaintInfo> {
+        self.rare_data
+            .get()?
+            .borrow()
+            .math_paint_info
+            .as_deref()
+            .copied()
     }
 
     pub(crate) fn style<'a>(&'a self) -> AtomicRef<'a, ServoArc<ComputedValues>> {
@@ -414,6 +447,10 @@ impl BoxFragment {
             self.baselines,
             with_style.style().effective_overflow(self.base.flags),
         ));
+
+        if let Some(info) = self.math_paint_info() {
+            tree.add_item(format!("math_paint_info={info:?}"));
+        }
 
         for child in &self.children {
             child.print(tree);
@@ -688,8 +725,8 @@ impl<'a> BoxFragmentWithStyle<'a> {
         // TODO: For input elements, we also disable the padding in the inline direction, as we
         // do not have a way to scroll the textual input element in inline direction yet.
         let should_include_additional_padding =
-            self.style().establishes_scroll_container(self.base.flags) &&
-                !self.base.flags.intersects(FragmentFlags::IS_INPUT_ELEMENT);
+            self.style().establishes_scroll_container(self.base.flags)
+                && !self.base.flags.intersects(FragmentFlags::IS_INPUT_ELEMENT);
 
         if should_include_additional_padding {
             scrollable_overflow = self
