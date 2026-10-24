@@ -128,6 +128,7 @@ fn parse_font_face_descriptors(
         font-style: {style};
         font-variation-settings: {variation_settings};
         font-weight: {weight};
+        font-stretch: {width};
         font-width: {width};
         line-gap-override: {line_gap_override};
         unicode-range: {unicode_range};
@@ -334,7 +335,7 @@ impl FontFace {
     ) -> Self {
         Self {
             reflector: Reflector::new(),
-            status: Cell::new(FontFaceLoadStatus::Loading),
+            status: Cell::new(FontFaceLoadStatus::Unloaded),
             descriptors: DomRefCell::new(descriptors),
             font_face_set: MutNullableDom::default(),
             family_name: DomRefCell::new(family_name.traced()),
@@ -709,11 +710,17 @@ impl FontFaceMethods<crate::DomTypeHolder> for FontFace {
             },
         );
 
-        // We parse the descriptors again because they are stored as `DOMString`s in this `FontFace`
-        // but the `load_web_font_for_script` API needs parsed values.
-        let parsed_font_face_rule = self
-            .font_face_rule(&global)
-            .expect("Parsing shouldn't fail as descriptors are valid by construction");
+        // Use the pre-parsed descriptors if this FontFace came from a CSS @font-face rule.
+        // Otherwise, parse the descriptors for JS-constructed FontFace objects.
+        let descriptors = match self.css_font_face_rule().as_ref() {
+            Some(rule_info) => (&rule_info.descriptors).into(),
+            None => {
+                let parsed_font_face_rule = self
+                    .font_face_rule(&global)
+                    .expect("Parsing shouldn't fail as descriptors are valid by construction");
+                (&parsed_font_face_rule).into()
+            },
+        };
 
         // Construct a WebFontDocumentContext object for the current document.
         let document_context = global.as_window().web_font_context(cx.no_gc());
@@ -725,7 +732,7 @@ impl FontFaceMethods<crate::DomTypeHolder> for FontFace {
         global.as_window().font_context().load_web_font_for_script(
             global.webview_id(),
             sources,
-            (&parsed_font_face_rule).into(),
+            descriptors,
             finished_callback,
             &document_context,
         );
