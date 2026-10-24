@@ -5,6 +5,7 @@
 @namespace url(http://www.w3.org/1998/Math/MathML);
 
 * {
+  display: block math;
   font-size: math;
   writing-mode: horizontal-tb !important;
 }
@@ -34,11 +35,6 @@ math[display="block" i] {
 math[display="inline" i] {
   display: inline math;
   math-style: compact;
-}
-
-mrow,
-mstyle {
-  display: inline;
 }
 
 mphantom {

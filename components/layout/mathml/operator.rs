@@ -134,7 +134,8 @@ impl MathOperatorBlock {
             natural_inline_size = containing_block.size.inline;
         }
         let natural_baseline = result.baselines.first.unwrap_or(result.content_block_size);
-        let (block_size, ascent, descent, baselines) = if self.is_stretchy && target_size.is_some() {
+        let (block_size, ascent, descent, baselines) = if self.is_stretchy && target_size.is_some()
+        {
             let (target_ascent, target_descent) = target_size.unwrap();
             let total_block = target_ascent + target_descent;
             // Center operator vertically inside total_block
@@ -157,7 +158,12 @@ impl MathOperatorBlock {
         } else {
             let op_baseline = physical_padding.top + natural_baseline;
             let op_descent = result.content_block_size - natural_baseline + physical_padding.bottom;
-            (result.content_block_size, op_baseline, op_descent, result.baselines)
+            (
+                result.content_block_size,
+                op_baseline,
+                op_descent,
+                result.baselines,
+            )
         };
         let logical_size = LogicalVec2 {
             inline: natural_inline_size,
@@ -187,10 +193,12 @@ impl MathOperatorBlock {
     pub(crate) fn attached_to_tree(&self, _layout_box: WeakLayoutBox) {}
     pub(crate) fn repair_style(
         &mut self,
-        _context: &SharedStyleContext,
-        _node: &ServoLayoutNode,
+        context: &SharedStyleContext,
+        node: &ServoLayoutNode,
         new_style: &ServoArc<ComputedValues>,
     ) {
         self.base.repair_style(new_style);
+        self.inline_formatting_context
+            .repair_style(context, node, new_style);
     }
 }

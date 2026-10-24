@@ -47,6 +47,16 @@ impl<'dom> NodeAndStyleInfo<'dom> {
         context: &LayoutContext,
         pseudo_element_type: PseudoElement,
     ) -> Option<Self> {
+        // Math layout does not expose a first formatted line or first letter.
+        // Check the display value: MathML elements using CSS flow layout can
+        // still support these pseudo-elements.
+        // https://w3c.github.io/mathml-core/#css-styling
+        if matches!(pseudo_element_type, PseudoElement::FirstLetter)
+            && self.style.get_box().display.inside()
+                == style::values::specified::box_::DisplayInside::Math
+        {
+            return None;
+        }
         let element = self.node.as_element()?.with_pseudo(pseudo_element_type)?;
         let style = element.style(&context.style_context);
         Some(NodeAndStyleInfo {
@@ -262,8 +272,8 @@ fn traverse_pseudo_element_contents<'dom>(
                 };
                 // `display` is not inherited, so we get the initial value
                 debug_assert!(
-                    Display::from(anonymous_info.style.get_box().display) ==
-                        Display::GeneratingBox(display_inline)
+                    Display::from(anonymous_info.style.get_box().display)
+                        == Display::GeneratingBox(display_inline)
                 );
                 handler.handle_element(
                     anonymous_info,
@@ -286,12 +296,12 @@ impl Contents {
         let is_widget = matches!(
             node.type_id(),
             Some(LayoutNodeType::Element(
-                LayoutElementType::HTMLButtonElement |
-                    LayoutElementType::HTMLInputElement |
-                    LayoutElementType::HTMLMeterElement |
-                    LayoutElementType::HTMLProgressElement |
-                    LayoutElementType::HTMLSelectElement |
-                    LayoutElementType::HTMLTextAreaElement
+                LayoutElementType::HTMLButtonElement
+                    | LayoutElementType::HTMLInputElement
+                    | LayoutElementType::HTMLMeterElement
+                    | LayoutElementType::HTMLProgressElement
+                    | LayoutElementType::HTMLSelectElement
+                    | LayoutElementType::HTMLTextAreaElement
             ))
         );
         if is_widget {
