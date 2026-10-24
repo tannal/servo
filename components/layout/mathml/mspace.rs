@@ -148,7 +148,7 @@ impl MathSpaceBlock {
     pub(crate) fn inline_content_sizes(
         &self,
         _layout_context: &LayoutContext,
-        _constraint_space: &ConstraintSpace,
+        constraint_space: &ConstraintSpace,
     ) -> InlineContentSizesResult {
         let width = self
             .width
@@ -157,10 +157,27 @@ impl MathSpaceBlock {
             .unwrap_or(Au::zero())
             .max(Au::zero());
 
+        let style = &self.base.style;
+        let writing_mode = style.writing_mode;
+        let layout_style = LayoutStyle::Default(style);
+        let pbm = layout_style
+            .content_box_sizes_and_padding_border_margin(&constraint_space.into())
+            .pbm;
+        let physical_padding = pbm.padding.to_physical(writing_mode);
+        let physical_border = pbm.border.to_physical(writing_mode);
+        let physical_margin = pbm.margin.auto_is(Au::zero).to_physical(writing_mode);
+        let extra_inline = physical_padding.left
+            + physical_padding.right
+            + physical_border.left
+            + physical_border.right
+            + physical_margin.left
+            + physical_margin.right;
+        let total = width + extra_inline;
+
         InlineContentSizesResult {
             sizes: ContentSizes {
-                min_content: width,
-                max_content: width,
+                min_content: total,
+                max_content: total,
             },
             depends_on_block_constraints: false,
         }
@@ -181,6 +198,9 @@ impl MathSpaceBlock {
             .pbm;
         let physical_padding = pbm.padding.to_physical(writing_mode);
         let physical_border = pbm.border.to_physical(writing_mode);
+        let logical_margin = pbm.margin.auto_is(Au::zero);
+        let physical_margin = logical_margin.to_physical(writing_mode);
+
         // Resolve width against containing block inline size
         // For width: resolve percentage against containing block inline size
         let width = self
@@ -202,6 +222,7 @@ impl MathSpaceBlock {
             .map(|lp| lp.to_used_value(Au::zero()))
             .unwrap_or(Au::zero())
             .max(Au::zero());
+
         let padding_border_inline = physical_padding.left
             + physical_padding.right
             + physical_border.left
@@ -210,17 +231,22 @@ impl MathSpaceBlock {
             + physical_padding.bottom
             + physical_border.top
             + physical_border.bottom;
-        let physical_margin = pbm.margin.auto_is(Au::zero).to_physical(writing_mode);
         let margin_inline = physical_margin.left + physical_margin.right;
         let margin_block = physical_margin.top + physical_margin.bottom;
 
         let total_inline = width + padding_border_inline + margin_inline;
         let total_block = height + depth + padding_border_block + margin_block;
-        // Content box: size is (width, height + depth), offset by padding-start + border-start
+
+        // Content box: offset by margin-start + padding-start + border-start so that the
+        // margin box starts at (0, 0).
         let content_rect = LogicalRect {
             start_corner: LogicalVec2 {
-                inline: pbm.padding.inline_start + pbm.border.inline_start,
-                block: pbm.padding.block_start + pbm.border.block_start,
+                inline: logical_margin.inline_start
+                    + pbm.padding.inline_start
+                    + pbm.border.inline_start,
+                block: logical_margin.block_start
+                    + pbm.padding.block_start
+                    + pbm.border.block_start,
             },
             size: LogicalVec2 {
                 inline: width,
@@ -228,8 +254,9 @@ impl MathSpaceBlock {
             },
         }
         .as_physical(Some(containing_block));
-        // Baseline: distance from box top (including border and padding) to baseline
-        let baseline = physical_padding.top + physical_border.top + height;
+
+        // Baseline: distance from box top (including margin, border and padding) to baseline
+        let baseline = physical_margin.top + physical_padding.top + physical_border.top + height;
         let baselines = Baselines {
             first: Some(baseline),
             last: Some(baseline),
@@ -241,7 +268,7 @@ impl MathSpaceBlock {
             content_rect,
             physical_padding,
             physical_border,
-            pbm.margin.auto_is(Au::zero).to_physical(writing_mode),
+            physical_margin,
             None,
         )
         .with_baselines(baselines);
@@ -250,7 +277,7 @@ impl MathSpaceBlock {
             inline_size: total_inline,
             block_size: total_block,
             ascent: baseline,
-            descent: depth + physical_padding.bottom + physical_border.bottom,
+            descent: depth + physical_padding.bottom + physical_border.bottom + physical_margin.bottom,
         }
     }
 }

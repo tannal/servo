@@ -484,7 +484,7 @@ impl MathFractionBlock {
         let metrics = if let Some(constants) = math_constants {
             FractionMetrics {
                 axis_height: constants.axis_height,
-                default_thickness: constants.rule_thickness.max(Au::from_px(1)),
+                default_thickness: constants.rule_thickness,
                 numerator_shift_up: constants.num_shift_up,
                 denominator_shift_down: constants.denom_shift_down,
                 numerator_gap_min: constants.num_gap_min,
@@ -523,7 +523,7 @@ impl MathFractionBlock {
             }
         };
 
-        let thickness = self.resolve_line_thickness(metrics.default_thickness).max(Au::from_px(1));
+        let thickness = self.resolve_line_thickness(metrics.default_thickness);
         let metrics = if has_math_constants {
             metrics
         } else {
