@@ -38,10 +38,11 @@ use crate::sizing::{ContentSizes, InlineContentSizesResult, Size, SizeConstraint
 use crate::style_ext::LayoutStyle;
 use crate::{ConstraintSpace, ContainingBlock, ContainingBlockSize};
 
+/// Baseline shifts after enforcing the font's minimum clearances.
 #[derive(Debug, Clone, Copy)]
-pub(crate) struct FractionParameters {
-    pub numerator_shift_up: Au,
-    pub denominator_shift_down: Au,
+struct FractionShifts {
+    numerator_shift_up: Au,
+    denominator_shift_down: Au,
 }
 
 /// Font-dependent inputs shared by fraction and stack layout.
@@ -49,8 +50,8 @@ pub(crate) struct FractionParameters {
 struct FractionMetrics {
     axis_height: Au,
     default_thickness: Au,
-    numerator_shift_up: Au,
-    denominator_shift_down: Au,
+    numerator_min_shift_up: Au,
+    denominator_min_shift_down: Au,
     numerator_gap_min: Au,
     denominator_gap_min: Au,
     stack_top_shift_up: Au,
@@ -59,13 +60,15 @@ struct FractionMetrics {
 }
 
 impl FractionMetrics {
-    fn new(font: Option<&Font>, is_display: bool) -> Self {
-        if let Some(constants) = font.and_then(|font| font.math_constants(is_display)) {
+    /// Resolve scaled font constants once, independently of author linethickness.
+    /// https://w3c.github.io/mathml-core/#layout-constants-mathconstants
+    fn new(font: Option<&Font>, is_display_style: bool) -> Self {
+        if let Some(constants) = font.and_then(|font| font.math_constants(is_display_style)) {
             return Self {
                 axis_height: constants.axis_height,
                 default_thickness: constants.rule_thickness,
-                numerator_shift_up: constants.num_shift_up,
-                denominator_shift_down: constants.denom_shift_down,
+                numerator_min_shift_up: constants.num_shift_up,
+                denominator_min_shift_down: constants.denom_shift_down,
                 numerator_gap_min: constants.num_gap_min,
                 denominator_gap_min: constants.denom_gap_min,
                 stack_top_shift_up: constants.stack_top_shift_up,
@@ -75,50 +78,34 @@ impl FractionMetrics {
         }
 
         let (axis_height, default_thickness) = font
-            .and_then(|font| font.metrics.get())
-            .map(|metrics| {
-                let axis_height = if metrics.x_height > Au::zero() {
-                    metrics.x_height / 2
-                } else {
-                    metrics.ascent / 3
-                };
-
-                (axis_height, metrics.underline_size.max(Au::from_px(1)))
+            .map(|font| {
+                // Initialize lazy metrics rather than depending on whether some
+                // earlier operation happened to populate the font's cache.
+                let metrics = font.metrics();
+                (metrics.x_height / 2, metrics.underline_size.max(Au::zero()))
             })
-            .unwrap_or((Au::from_px(4), Au::from_px(1)));
+            .unwrap_or((Au::zero(), Au::zero()));
+        let fraction_gap = default_thickness * if is_display_style { 3 } else { 1 };
 
         Self {
             axis_height,
             default_thickness,
-            numerator_shift_up: Au::zero(),
-            denominator_shift_down: Au::zero(),
-            numerator_gap_min: Au::zero(),
-            denominator_gap_min: Au::zero(),
+            numerator_min_shift_up: Au::zero(),
+            denominator_min_shift_down: Au::zero(),
+            numerator_gap_min: fraction_gap,
+            denominator_gap_min: fraction_gap,
             stack_top_shift_up: Au::zero(),
             stack_bottom_shift_down: Au::zero(),
-            stack_gap_min: (default_thickness * if is_display { 7 } else { 3 }).max(Au::from_px(7)),
+            stack_gap_min: default_thickness * if is_display_style { 7 } else { 3 },
         }
     }
 
-    /// Applies the fallback rules that depend on the resolved line thickness.
-    fn with_fallback_fraction_parameters(mut self, thickness: Au, is_display: bool) -> Self {
-        let gap = (thickness * if is_display { 3 } else { 1 }).max(Au::from_px(2));
-        let half_thickness = thickness / 2;
-
-        self.numerator_gap_min = gap;
-        self.denominator_gap_min = gap;
-        self.numerator_shift_up = self.axis_height + half_thickness + gap;
-        self.denominator_shift_down = half_thickness + gap;
-
-        self
-    }
-
-    fn compute_parameters(
+    fn compute_shifts(
         &self,
         thickness: Au,
         numerator_descent: Au,
         denominator_ascent: Au,
-    ) -> FractionParameters {
+    ) -> FractionShifts {
         if thickness > Au::zero() {
             let half_thickness = thickness / 2;
             let numerator_clearance =
@@ -126,9 +113,9 @@ impl FractionMetrics {
             let denominator_clearance =
                 half_thickness + self.denominator_gap_min + denominator_ascent - self.axis_height;
 
-            return FractionParameters {
-                numerator_shift_up: self.numerator_shift_up.max(numerator_clearance),
-                denominator_shift_down: self.denominator_shift_down.max(denominator_clearance),
+            return FractionShifts {
+                numerator_shift_up: self.numerator_min_shift_up.max(numerator_clearance),
+                denominator_shift_down: self.denominator_min_shift_down.max(denominator_clearance),
             };
         }
 
@@ -138,12 +125,14 @@ impl FractionMetrics {
             numerator_shift_up - numerator_descent + denominator_shift_down - denominator_ascent;
 
         if actual_gap < self.stack_gap_min {
-            let adjustment = (self.stack_gap_min - actual_gap) / 2;
-            numerator_shift_up += adjustment;
-            denominator_shift_down += adjustment;
+            let deficit = self.stack_gap_min - actual_gap;
+            let numerator_adjustment = deficit / 2;
+            numerator_shift_up += numerator_adjustment;
+            // Preserve the remainder when the deficit is an odd number of Au.
+            denominator_shift_down += deficit - numerator_adjustment;
         }
 
-        FractionParameters {
+        FractionShifts {
             numerator_shift_up,
             denominator_shift_down,
         }
@@ -157,60 +146,6 @@ pub(crate) struct MathFractionBlock {
     pub denominator: Option<ArcRefCell<MathLevelBox>>,
     #[ignore_malloc_size_of = "LengthPercentage does not allocate on the heap"]
     pub linethickness: Option<LengthPercentage>,
-    pub num_align: FractionAlignment,
-    pub denom_align: FractionAlignment,
-}
-
-#[derive(Debug, MallocSizeOf, PartialEq, Eq, Clone, Copy, Default)]
-pub(crate) enum FractionAlignment {
-    Left,
-    #[default]
-    Center,
-    Right,
-}
-
-impl FractionAlignment {
-    fn offset(self, content_width: Au, child_width: Au) -> Au {
-        match self {
-            Self::Left => Au::zero(),
-            Self::Center => (content_width - child_width) / 2,
-            Self::Right => content_width - child_width,
-        }
-    }
-}
-
-/// Builds the computed-value context in one place.
-///
-/// The callback keeps attribute access at the call site, without requiring
-/// this helper to depend on the concrete node type.
-fn compute_line_thickness(
-    context: &SharedStyleContext,
-    style: &ServoArc<ComputedValues>,
-    resolve: impl FnOnce(&Context) -> Option<LengthPercentage>,
-) -> Option<LengthPercentage> {
-    let mut rule_cache_conditions = RuleCacheConditions::default();
-    let mut tree_counting_caches = TreeCountingCaches::default();
-
-    let style_builder = StyleBuilder::new(
-        context.stylist.device(),
-        Some(context.stylist),
-        Some(style),
-        None,
-        None,
-        false,
-    );
-
-    let computed_context = Context::new(
-        style_builder,
-        context.quirks_mode(),
-        &mut rule_cache_conditions,
-        ContainerSizeQuery::none(),
-        RuleCascadeFlags::empty(),
-        &DummyElementContext,
-        &mut tree_counting_caches,
-    );
-
-    resolve(&computed_context)
 }
 
 impl MathFractionBlock {
@@ -239,8 +174,6 @@ impl MathFractionBlock {
                 numerator: None,
                 denominator: None,
                 linethickness: None,
-                num_align: FractionAlignment::Center,
-                denom_align: FractionAlignment::Center,
             };
         }
 
@@ -271,8 +204,6 @@ impl MathFractionBlock {
             numerator,
             denominator,
             linethickness,
-            num_align: FractionAlignment::Center,
-            denom_align: FractionAlignment::Center,
         }
     }
 
@@ -472,93 +403,45 @@ impl MathFractionBlock {
             false,
         );
 
-        let is_display = style.get_font().math_style == MathStyle::Normal;
+        let is_display_style = style.get_font().math_style == MathStyle::Normal;
         let font_group = layout_context.font_context.font_group(style.clone_font());
         let font = font_group.first(&layout_context.font_context);
-        let font_ref = font.as_ref().map(|font| &***font);
-
-        // Obtain MATH constants once and use the same snapshot throughout.
-        let math_constants = font_ref.and_then(|font| font.math_constants(is_display));
-        let has_math_constants = math_constants.is_some();
-
-        let metrics = if let Some(constants) = math_constants {
-            FractionMetrics {
-                axis_height: constants.axis_height,
-                default_thickness: constants.rule_thickness,
-                numerator_shift_up: constants.num_shift_up,
-                denominator_shift_down: constants.denom_shift_down,
-                numerator_gap_min: constants.num_gap_min,
-                denominator_gap_min: constants.denom_gap_min,
-                stack_top_shift_up: constants.stack_top_shift_up,
-                stack_bottom_shift_down: constants.stack_bottom_shift_down,
-                stack_gap_min: constants.stack_gap_min,
-            }
-        } else {
-            FractionMetrics::new(None, is_display)
-        };
-
-        // Use ordinary font metrics when the font has no MATH table.
-        let metrics = if has_math_constants {
-            metrics
-        } else {
-            let (axis_height, default_thickness) = font_ref
-                .and_then(|font| font.metrics.get())
-                .map(|metrics| {
-                    let axis_height = if metrics.x_height > Au::zero() {
-                        metrics.x_height / 2
-                    } else {
-                        metrics.ascent / 3
-                    };
-
-                    (axis_height, metrics.underline_size.max(Au::from_px(1)))
-                })
-                .unwrap_or((Au::from_px(4), Au::from_px(1)));
-
-            FractionMetrics {
-                axis_height,
-                default_thickness,
-                stack_gap_min: (default_thickness * if is_display { 7 } else { 3 })
-                    .max(Au::from_px(7)),
-                ..metrics
-            }
-        };
-
+        let metrics = FractionMetrics::new(font.as_ref().map(|font| &***font), is_display_style);
         let thickness = self.resolve_line_thickness(metrics.default_thickness);
-        let metrics = if has_math_constants {
-            metrics
-        } else {
-            metrics.with_fallback_fraction_parameters(thickness, is_display)
-        };
 
-        let parameters = metrics.compute_parameters(
+        // TODO: Clearance must use ink metrics of the children's margin boxes.
+        // MathLayoutOutput currently exposes only layout ascent and descent.
+        let shifts = metrics.compute_shifts(
             thickness,
             numerator_output.descent,
             denominator_output.ascent,
         );
 
-        let mut fraction_ascent = parameters.numerator_shift_up + numerator_output.ascent;
-        let mut fraction_descent = parameters.denominator_shift_down + denominator_output.descent;
+        // Either child can cross the fraction baseline. Include both translated
+        // boxes in each extent, including for stacks with no fraction rule.
+        let mut fraction_ascent = (shifts.numerator_shift_up + numerator_output.ascent)
+            .max(denominator_output.ascent - shifts.denominator_shift_down)
+            .max(Au::zero());
+        let mut fraction_descent = (numerator_output.descent - shifts.numerator_shift_up)
+            .max(shifts.denominator_shift_down + denominator_output.descent)
+            .max(Au::zero());
 
         if thickness > Au::zero() {
             fraction_ascent = fraction_ascent.max(metrics.axis_height + thickness / 2);
             fraction_descent = fraction_descent.max(thickness / 2 - metrics.axis_height);
         }
 
-        let fraction_ascent = fraction_ascent.max(Au::zero());
-        let fraction_descent = fraction_descent.max(Au::zero());
         let content_block = fraction_ascent + fraction_descent;
 
-        let numerator_x = self
-            .num_align
-            .offset(content_width, numerator_output.inline_size);
-        let numerator_y = fraction_ascent - parameters.numerator_shift_up - numerator_output.ascent;
+        // MathML Core centers the children; legacy numalign/denomalign do not
+        // introduce a separate alignment policy here.
+        let numerator_x = (content_width - numerator_output.inline_size) / 2;
+        let numerator_y = fraction_ascent - shifts.numerator_shift_up - numerator_output.ascent;
         translate_fragments(&mut numerator_output.fragments, numerator_x, numerator_y);
 
-        let denominator_x = self
-            .denom_align
-            .offset(content_width, denominator_output.inline_size);
+        let denominator_x = (content_width - denominator_output.inline_size) / 2;
         let denominator_y =
-            fraction_ascent + parameters.denominator_shift_down - denominator_output.ascent;
+            fraction_ascent + shifts.denominator_shift_down - denominator_output.ascent;
         translate_fragments(
             &mut denominator_output.fragments,
             denominator_x,
@@ -594,9 +477,11 @@ impl MathFractionBlock {
         .as_physical(Some(containing_block));
 
         let fraction_baseline = physical_padding.top + physical_border.top + fraction_ascent;
+        // Fragment baselines are content-relative. MathLayoutOutput uses the
+        // outer ascent, so only that value includes the border and padding.
         let baselines = Baselines {
-            first: Some(fraction_baseline),
-            last: Some(fraction_baseline),
+            first: Some(fraction_ascent),
+            last: Some(fraction_ascent),
         };
 
         let box_fragment = BoxFragment::new(
