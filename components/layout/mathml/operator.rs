@@ -18,11 +18,11 @@ use crate::dom::WeakLayoutBox;
 use crate::dom_traversal::NodeAndStyleInfo;
 use crate::flow::CollapsibleWithParentStartMargin;
 use crate::flow::inline::InlineFormattingContext;
-use crate::formatting_contexts::Baselines;
-use crate::fragment_tree::{BoxFragment, Fragment};
-use crate::geom::{LogicalSides1D, LogicalVec2, PhysicalPoint, PhysicalRect, PhysicalVec};
+use crate::geom::{LogicalSides1D, PhysicalVec};
 use crate::layout_box_base::LayoutBoxBase;
-use crate::mathml::MathLayoutOutput;
+use crate::mathml::{
+    MathBoxMetrics, MathLayoutResult, MathOperatorProperties, MathStretchAxis, MathStretchTarget,
+};
 use crate::positioned::PositioningContext;
 use crate::sizing::{ComputeInlineContentSizes, InlineContentSizesResult, LazySize};
 use crate::style_ext::LayoutStyle;
@@ -56,11 +56,12 @@ fn parse_operator_info(info: &NodeAndStyleInfo, text_content: &str) -> (bool, Op
     let mut is_stretchy = false;
     if let Some(element) = info.node.as_element() {
         if element.local_name() == &local_name!("mo") {
-            operator_char = text_content.trim().chars().next();
+            let mut characters = text_content.trim().chars();
+            operator_char = characters.next().filter(|_| characters.next().is_none());
             let explicit_stretchy = element.attribute_as_str(&ns!(), &local_name!("stretchy"));
             is_stretchy = match explicit_stretchy {
-                Some("true") => true,
-                Some("false") => false,
+                Some(value) if value.eq_ignore_ascii_case("true") => true,
+                Some(value) if value.eq_ignore_ascii_case("false") => false,
                 _ => operator_char.map_or(false, is_default_stretchy_char),
             };
         }
@@ -73,6 +74,7 @@ pub(crate) struct MathOperatorBlock {
     pub inline_formatting_context: InlineFormattingContext,
     pub is_stretchy: bool,
     pub operator_char: Option<char>,
+    symmetric: bool,
 }
 impl MathOperatorBlock {
     pub(crate) fn construct(
@@ -86,6 +88,17 @@ impl MathOperatorBlock {
             inline_formatting_context,
             is_stretchy,
             operator_char,
+            // Keep the existing symmetric default until dictionary resolution
+            // supplies all operator properties; explicit false is respected.
+            symmetric: info
+                .node
+                .as_element()
+                .and_then(|element| {
+                    element
+                        .attribute_as_str(&ns!(), &local_name!("symmetric"))
+                        .map(|value| !value.eq_ignore_ascii_case("false"))
+                })
+                .unwrap_or(true),
         }
     }
     pub(crate) fn inline_content_sizes(
@@ -101,8 +114,8 @@ impl MathOperatorBlock {
         layout_context: &LayoutContext,
         positioning_context: &mut PositioningContext,
         containing_block: &ContainingBlock,
-        target_size: Option<(Au, Au)>,
-    ) -> MathLayoutOutput {
+        target_size: Option<MathStretchTarget>,
+    ) -> MathLayoutResult {
         let mut ifc_positioning_context = PositioningContext::default();
         let result = self.inline_formatting_context.layout(
             layout_context,
@@ -114,14 +127,10 @@ impl MathOperatorBlock {
         );
         positioning_context.append(ifc_positioning_context);
         let style = &self.base.style;
-        let writing_mode = style.writing_mode;
         let layout_style = LayoutStyle::Default(style);
         let pbm = layout_style
             .content_box_sizes_and_padding_border_margin(&containing_block.into())
             .pbm;
-        let physical_padding = pbm.padding.to_physical(writing_mode);
-        let border = pbm.border.to_physical(writing_mode);
-        let margin = pbm.margin.auto_is(Au::zero).to_physical(writing_mode);
         let mut fragments = result.fragments;
         let mut natural_inline_size = Au::zero();
         for frag in &fragments {
@@ -134,62 +143,70 @@ impl MathOperatorBlock {
             natural_inline_size = containing_block.size.inline;
         }
         let natural_baseline = result.baselines.first.unwrap_or(result.content_block_size);
-        let (block_size, ascent, descent, baselines) = if self.is_stretchy && target_size.is_some()
+        let mut metrics = MathBoxMetrics::new(
+            natural_inline_size,
+            result.content_block_size,
+            natural_baseline,
+        );
+        if self.is_stretchy
+            && self.operator_char.is_some()
+            && self.operator_properties().stretch_axis == MathStretchAxis::Block
         {
-            let (target_ascent, target_descent) = target_size.unwrap();
-            let total_block = target_ascent + target_descent;
-            // Center operator vertically inside total_block
-            let y_shift = (total_block - result.content_block_size) / 2;
-            if y_shift != Au::zero() {
-                let translation = PhysicalVec::new(Au::zero(), y_shift);
-                for frag in &mut fragments {
-                    if let Some(base) = frag.base() {
-                        base.translate_rect(translation.into());
+            if let Some(MathStretchTarget::Block {
+                mut ascent,
+                mut descent,
+            }) = target_size
+            {
+                // Symmetry belongs to the core operator, not to its parent row.
+                if self.symmetric {
+                    let font_group = layout_context.font_context.font_group(style.clone_font());
+                    let font = font_group.first(&layout_context.font_context);
+                    let axis = font
+                        .as_ref()
+                        .map(|font| {
+                            font.math_constants(false)
+                                .map(|constants| constants.axis_height)
+                                .unwrap_or_else(|| font.metrics().x_height / 2)
+                        })
+                        .unwrap_or(Au::zero());
+                    let half_height = (ascent - axis).max(descent + axis);
+                    ascent = half_height + axis;
+                    descent = half_height - axis;
+                }
+                // TODO: Replace the current centering fallback with glyph variant
+                // selection/assembly. A zero stretch target retains natural size.
+                let target_height = ascent + descent;
+                if target_height > metrics.size.block {
+                    let y_shift = (target_height - metrics.size.block) / 2;
+                    let translation = PhysicalVec::new(Au::zero(), y_shift);
+                    for fragment in &mut fragments {
+                        if let Some(base) = fragment.base() {
+                            base.translate_rect(translation.into());
+                        }
                     }
+                    metrics = MathBoxMetrics::new(natural_inline_size, target_height, ascent);
                 }
             }
-            let op_baseline = physical_padding.top + target_ascent;
-            let op_descent = target_descent + physical_padding.bottom;
-            let baselines = Baselines {
-                first: Some(op_baseline),
-                last: Some(op_baseline),
-            };
-            (total_block, op_baseline, op_descent, baselines)
-        } else {
-            let op_baseline = physical_padding.top + natural_baseline;
-            let op_descent = result.content_block_size - natural_baseline + physical_padding.bottom;
-            (
-                result.content_block_size,
-                op_baseline,
-                op_descent,
-                result.baselines,
-            )
-        };
-        let logical_size = LogicalVec2 {
-            inline: natural_inline_size,
-            block: block_size,
-        };
-        let physical_size = logical_size.to_physical_size(writing_mode);
-        let content_rect = PhysicalRect::new(PhysicalPoint::zero(), physical_size);
-        let box_fragment = BoxFragment::new(
-            self.base.base_fragment_info.clone(),
-            self.base.style.clone(),
-            fragments,
-            content_rect,
-            physical_padding,
-            border,
-            margin,
-            None,
-        )
-        .with_baselines(baselines);
-        MathLayoutOutput {
-            fragments: vec![Fragment::Box(box_fragment.into())],
-            inline_size: natural_inline_size + physical_padding.left + physical_padding.right,
-            block_size: block_size + physical_padding.top + physical_padding.bottom,
-            ascent,
-            descent,
+        }
+        // Inline requests deliberately retain natural measurements until the
+        // shaper can produce a genuinely horizontally stretched glyph.
+        MathLayoutResult::from_content(&self.base, containing_block, &pbm, fragments, metrics, None)
+    }
+
+    pub(crate) fn operator_properties(&self) -> MathOperatorProperties {
+        MathOperatorProperties {
+            stretchy: self.is_stretchy && self.operator_char.is_some(),
+            stretch_axis: if self
+                .operator_char
+                .is_some_and(|c| INLINE_STRETCH_OPERATORS.binary_search(&(c as u32)).is_ok())
+            {
+                MathStretchAxis::Inline
+            } else {
+                MathStretchAxis::Block
+            },
         }
     }
+
     pub(crate) fn attached_to_tree(&self, _layout_box: WeakLayoutBox) {}
     pub(crate) fn repair_style(
         &mut self,
@@ -198,7 +215,53 @@ impl MathOperatorBlock {
         new_style: &ServoArc<ComputedValues>,
     ) {
         self.base.repair_style(new_style);
+        // Some existing container repair paths pass the ancestor's node. Only
+        // refresh DOM-derived operator properties when this is the actual mo.
+        if node
+            .as_element()
+            .is_some_and(|element| element.local_name() == &local_name!("mo"))
+        {
+            let info = NodeAndStyleInfo::new(*node, new_style.clone());
+            let (is_stretchy, operator_char) =
+                parse_operator_info(&info, &collect_text_content(&info));
+            self.is_stretchy = is_stretchy;
+            self.operator_char = operator_char;
+            self.symmetric = node
+                .as_element()
+                .and_then(|element| {
+                    element
+                        .attribute_as_str(&ns!(), &local_name!("symmetric"))
+                        .map(|value| !value.eq_ignore_ascii_case("false"))
+                })
+                .unwrap_or(true);
+        }
         self.inline_formatting_context
             .repair_style(context, node, new_style);
     }
 }
+
+// https://w3c.github.io/mathml-core/#operator-dictionary
+// Intrinsic inline stretch axes, independent of operator form or stretchiness.
+const INLINE_STRETCH_OPERATORS: &[u32] = &[
+    0x003D, 0x005E, 0x005F, 0x007E, 0x00AF, 0x02C6, 0x02C7, 0x02C9, 0x02CD, 0x02DC, 0x02F7, 0x0302,
+    0x0332, 0x203E, 0x20D0, 0x20D1, 0x20D6, 0x20D7, 0x20E1, 0x2190, 0x2192, 0x2194, 0x2198, 0x2199,
+    0x219A, 0x219B, 0x219C, 0x219D, 0x219E, 0x21A0, 0x21A2, 0x21A3, 0x21A4, 0x21A6, 0x21A9, 0x21AA,
+    0x21AB, 0x21AC, 0x21AD, 0x21AE, 0x21B4, 0x21B9, 0x21BC, 0x21BD, 0x21C0, 0x21C1, 0x21C4, 0x21C6,
+    0x21C7, 0x21C9, 0x21CB, 0x21CC, 0x21CD, 0x21CE, 0x21CF, 0x21D0, 0x21D2, 0x21D4, 0x21DA, 0x21DB,
+    0x21DC, 0x21DD, 0x21E0, 0x21E2, 0x21E4, 0x21E5, 0x21E6, 0x21E8, 0x21F0, 0x21F4, 0x21F6, 0x21F7,
+    0x21F8, 0x21F9, 0x21FA, 0x21FB, 0x21FC, 0x21FD, 0x21FE, 0x21FF, 0x2322, 0x2323, 0x23B4, 0x23B5,
+    0x23DC, 0x23DD, 0x23DE, 0x23DF, 0x23E0, 0x23E1, 0x2500, 0x2794, 0x2799, 0x279B, 0x279C, 0x279D,
+    0x279E, 0x279F, 0x27A0, 0x27A1, 0x27A5, 0x27A6, 0x27A8, 0x27A9, 0x27AA, 0x27AB, 0x27AC, 0x27AD,
+    0x27AE, 0x27AF, 0x27B1, 0x27B3, 0x27B5, 0x27B8, 0x27BA, 0x27BB, 0x27BC, 0x27BD, 0x27BE, 0x27F4,
+    0x27F5, 0x27F6, 0x27F7, 0x27F8, 0x27F9, 0x27FA, 0x27FB, 0x27FC, 0x27FD, 0x27FE, 0x27FF, 0x2900,
+    0x2901, 0x2902, 0x2903, 0x2904, 0x2905, 0x2906, 0x2907, 0x290C, 0x290D, 0x290E, 0x290F, 0x2910,
+    0x2911, 0x2914, 0x2915, 0x2916, 0x2917, 0x2918, 0x2919, 0x291A, 0x291B, 0x291C, 0x291D, 0x291E,
+    0x291F, 0x2920, 0x2942, 0x2943, 0x2944, 0x2945, 0x2946, 0x2947, 0x2948, 0x294A, 0x294B, 0x294E,
+    0x2950, 0x2952, 0x2953, 0x2956, 0x2957, 0x295A, 0x295B, 0x295E, 0x295F, 0x2962, 0x2964, 0x2966,
+    0x2967, 0x2968, 0x2969, 0x296A, 0x296B, 0x296C, 0x296D, 0x2970, 0x2971, 0x2972, 0x2973, 0x2974,
+    0x2975, 0x297C, 0x297D, 0x2B04, 0x2B05, 0x2B0C, 0x2B30, 0x2B31, 0x2B32, 0x2B33, 0x2B34, 0x2B35,
+    0x2B36, 0x2B37, 0x2B38, 0x2B39, 0x2B3A, 0x2B3B, 0x2B3C, 0x2B3D, 0x2B3E, 0x2B40, 0x2B41, 0x2B42,
+    0x2B43, 0x2B44, 0x2B45, 0x2B46, 0x2B47, 0x2B48, 0x2B49, 0x2B4A, 0x2B4B, 0x2B4C, 0x2B60, 0x2B62,
+    0x2B64, 0x2B6A, 0x2B6C, 0x2B70, 0x2B72, 0x2B7A, 0x2B7C, 0x2B80, 0x2B82, 0x2B84, 0x2B86, 0x2B95,
+    0xFE35, 0xFE36, 0xFE37, 0xFE38, 0x1EEF0, 0x1EEF1,
+];

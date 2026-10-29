@@ -6,31 +6,28 @@ use servo_arc::Arc as ServoArc;
 use style::attr::AttrValue;
 use style::context::{SharedStyleContext, TreeCountingCaches};
 use style::dom::DummyElementContext;
-use style::logical_geometry::LogicalSize;
-use style::parser::{Parse, ParserContext};
 use style::properties::{ComputedValues, StyleBuilder};
 use style::rule_cache::RuleCacheConditions;
 use style::rule_tree::RuleCascadeFlags;
 use style::stylesheets::container_rule::ContainerSizeQuery;
-// use style::values::specified::LengthPercentage;
-// use style::values::computed::LengthPercentage;
 use style::values::computed::{Context, LengthPercentage, ToComputedValue};
 use web_atoms::local_name;
 use web_atoms::ns;
 
-use super::{MathLevelBox, MathTraversalBuilder};
+use super::MathLevelBox;
 use crate::cell::ArcRefCell;
 use crate::context::LayoutContext;
 use crate::dom::WeakLayoutBox;
-use crate::dom_traversal::{Contents, NodeAndStyleInfo};
-use crate::fragment_tree::{BaseFragmentInfo, BoxFragment, Fragment};
-use crate::geom::{LogicalRect, LogicalVec2, PhysicalSides, PhysicalVec};
+use crate::dom_traversal::NodeAndStyleInfo;
+use crate::fragment_tree::BaseFragmentInfo;
 use crate::layout_box_base::LayoutBoxBase;
-use crate::mathml::{MathRowBlock, translate_fragments};
+use crate::mathml::{
+    MathBoxMetrics, MathLayoutResult, MathRowBlock, MathStretchTarget, translate_fragments,
+};
 use crate::positioned::PositioningContext;
 use crate::sizing::{ContentSizes, InlineContentSizesResult};
 use crate::style_ext::LayoutStyle;
-use crate::{ConstraintSpace, ContainingBlock, PropagatedBoxTreeData};
+use crate::{ConstraintSpace, ContainingBlock};
 use style::Zero;
 
 #[derive(Debug, MallocSizeOf)]
@@ -148,7 +145,7 @@ impl MathPaddedBlock {
     ) -> InlineContentSizesResult {
         let inner_sizes = self
             .inner_row
-            .inline_content_sizes(layout_context, constraint_space);
+            .content_inline_sizes(layout_context, constraint_space);
 
         let mut min_content = inner_sizes.sizes.min_content;
         let mut max_content = inner_sizes.sizes.max_content;
@@ -158,6 +155,13 @@ impl MathPaddedBlock {
             min_content = w.max(Au::zero());
             max_content = w.max(Au::zero());
         }
+
+        let pbm = LayoutStyle::Default(&self.base.style)
+            .content_box_sizes_and_padding_border_margin(&constraint_space.into())
+            .pbm;
+        let extra = pbm.padding_border_sums.inline + pbm.margin.auto_is(Au::zero).inline_sum();
+        min_content += extra;
+        max_content += extra;
 
         InlineContentSizesResult {
             sizes: ContentSizes {
@@ -173,38 +177,27 @@ impl MathPaddedBlock {
         layout_context: &LayoutContext,
         positioning_context: &mut PositioningContext,
         containing_block: &ContainingBlock,
-    ) -> Vec<Fragment> {
+        target_size: Option<MathStretchTarget>,
+    ) -> MathLayoutResult {
         let style = &self.base.style;
-        let writing_mode = style.writing_mode;
-        let is_rtl = !writing_mode.is_bidi_ltr();
+        let is_rtl = !style.writing_mode.is_bidi_ltr();
 
         let layout_style = LayoutStyle::Default(style);
         let pbm = layout_style
             .content_box_sizes_and_padding_border_margin(&containing_block.into())
             .pbm;
-        let physical_padding = pbm.padding.to_physical(writing_mode);
-
-        // 1. Layout inner anonymous mrow
-        let mut output = self
-            .inner_row
-            .layout(layout_context, positioning_context, containing_block, None);
-
-        // 2. Measure inner content dimensions
-        let mut inner_width = Au::zero();
-        let mut inner_ascent = Au::zero();
-        let mut inner_descent = Au::zero();
-
+        // Use the anonymous row's measurements directly. Fragment origins are
+        // positions, not ascents, and cannot reconstruct the baseline contract.
+        let output = self.inner_row.layout_contents(
+            layout_context,
+            positioning_context,
+            containing_block,
+            target_size,
+        );
+        let inner_width = output.metrics.size.inline;
+        let inner_ascent = output.metrics.ascent();
+        let inner_descent = output.metrics.descent();
         let mut child_fragments = output.fragments;
-
-        for fragment in &child_fragments {
-            if let Some(base) = fragment.base() {
-                let rect = base.rect();
-                inner_width = inner_width.max(rect.origin.x + rect.size.width);
-                inner_ascent = inner_ascent.max(rect.origin.y);
-                inner_descent =
-                    inner_descent.max((rect.origin.y + rect.size.height) - inner_ascent);
-            }
-        }
 
         // 3. Resolve attribute metric overrides
         let resolved_width = self
@@ -237,39 +230,22 @@ impl MathPaddedBlock {
             lspace
         };
 
-        // Positive voffset moves content upwards in physical space
-        let offset_y = -voffset;
+        // Preserve the requested baseline while moving the contents upwards
+        // for positive voffset. Height/depth overrides need not enclose the ink.
+        let offset_y = resolved_ascent - inner_ascent - voffset;
+        translate_fragments(&mut child_fragments, offset_x, offset_y);
 
-        let physical_offset = PhysicalVec::new(
-            offset_x + physical_padding.left,
-            offset_y + physical_padding.top,
-        );
-
-        translate_fragments(&mut child_fragments, physical_offset.x, physical_offset.y);
-
-        // 5. Construct container fragment geometry
-        let content_size = LogicalVec2 {
-            inline: resolved_width,
-            block: resolved_ascent + resolved_descent,
-        };
-
-        let content_rect = LogicalRect {
-            start_corner: LogicalVec2::zero(),
-            size: content_size,
-        }
-        .as_physical(Some(containing_block));
-
-        let box_fragment = BoxFragment::new(
-            self.base.base_fragment_info.clone(),
-            self.base.style.clone(),
+        MathLayoutResult::from_content(
+            &self.base,
+            containing_block,
+            &pbm,
             child_fragments,
-            content_rect,
-            physical_padding,
-            pbm.border.to_physical(writing_mode),
-            pbm.margin.auto_is(Au::zero).to_physical(writing_mode),
+            MathBoxMetrics::new(
+                resolved_width,
+                resolved_ascent + resolved_descent,
+                resolved_ascent,
+            ),
             None,
-        );
-
-        vec![Fragment::Box(box_fragment.into())]
+        )
     }
 }

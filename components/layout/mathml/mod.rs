@@ -2,6 +2,12 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
+mod layout;
+
+pub(crate) use self::layout::{
+    MathBoxMetrics, MathLayoutResult, MathOperatorProperties, MathStretchAxis, MathStretchTarget,
+};
+
 pub(crate) mod mfrac;
 pub(crate) mod mpadded;
 pub(crate) mod mrow;
@@ -9,31 +15,19 @@ pub(crate) mod mspace;
 pub(crate) mod operator;
 pub(crate) mod text;
 
-use crate::flow::inline::InlineFormattingContext;
-use crate::flow::inline::construct::InlineFormattingContextBuilder;
-use crate::flow::inline::inline_box::InlineBox;
-use crate::flow::{
-    BlockContainer, BlockContainerBuilder, BlockFormattingContext, CollapsibleWithParentStartMargin,
-};
+use crate::flow::{BlockContainer, BlockContainerBuilder, BlockFormattingContext};
 use crate::formatting_contexts::{Baselines, IndependentFormattingContextContents};
-use crate::geom::LogicalSides1D;
+use crate::geom::PhysicalVec;
 use crate::mathml::mspace::MathSpaceBlock;
 use app_units::Au;
-use style::Zero;
-use fonts::FontRef;
 use malloc_size_of_derive::MallocSizeOf;
 use script::layout_dom::ServoLayoutNode;
 use servo_arc::Arc as ServoArc;
 use style::context::SharedStyleContext;
-use style::logical_geometry::Direction;
 use style::properties::ComputedValues;
-use style::properties::style_structs::Font;
-use style::values::computed::MathStyle;
-use unicode_bidi::Level;
 use web_atoms::local_name;
-use crate::geom::PhysicalVec;
 
-use crate::cell::{ArcRefCell, WeakRefCell};
+use crate::cell::ArcRefCell;
 use crate::context::LayoutContext;
 use crate::dom::{BoxSlot, LayoutBox, WeakLayoutBox};
 use crate::dom_traversal::{
@@ -43,11 +37,9 @@ use crate::formatting_contexts::IndependentFormattingContext;
 use crate::fragment_tree::{CollapsedBlockMargins, Fragment};
 use crate::layout_box_base::{IndependentFormattingContextLayoutResult, LayoutBoxBase};
 use crate::positioned::PositioningContext;
-use crate::sizing::{ComputeInlineContentSizes, InlineContentSizesResult, LazySize, Size};
+use crate::sizing::InlineContentSizesResult;
 use crate::style_ext::{DisplayGeneratingBox, LayoutStyle};
-use crate::{
-    ConstraintSpace, ContainingBlock, IndefiniteContainingBlock, LogicalVec2, PropagatedBoxTreeData,
-};
+use crate::{ConstraintSpace, ContainingBlock, PropagatedBoxTreeData};
 use layout_api::{LayoutElement, LayoutNode};
 
 pub(crate) use self::mfrac::MathFractionBlock;
@@ -113,6 +105,7 @@ impl<'a, 'dom> TraversalHandler<'dom> for MathTraversalBuilder<'a, 'dom> {
                         let text_block = MathTextBlock {
                             base: LayoutBoxBase::new(info.into(), info.style.clone()),
                             formatting_context: independent_fc,
+                            is_space_like: false,
                         };
                         ArcRefCell::new(MathLevelBox::Text(ArcRefCell::new(text_block)))
                     },
@@ -120,10 +113,10 @@ impl<'a, 'dom> TraversalHandler<'dom> for MathTraversalBuilder<'a, 'dom> {
                 box_slot.set(LayoutBox::MathLevel(level_box.clone()));
                 self.children.push(level_box);
             },
-            Some(&local_name!("mi")) |
-            Some(&local_name!("mn")) |
-            Some(&local_name!("ms")) |
-            Some(&local_name!("mtext")) => {
+            Some(&local_name!("mi"))
+            | Some(&local_name!("mn"))
+            | Some(&local_name!("ms"))
+            | Some(&local_name!("mtext")) => {
                 // Integration point: Delegate to BlockContainerBuilder to support HTML/SVG subtrees inside mtext.
                 let mut block_builder =
                     BlockContainerBuilder::new(self.context, info, self.propagated_data);
@@ -145,6 +138,7 @@ impl<'a, 'dom> TraversalHandler<'dom> for MathTraversalBuilder<'a, 'dom> {
                 let text_block = MathTextBlock {
                     base: LayoutBoxBase::new(info.into(), info.style.clone()),
                     formatting_context: independent_fc,
+                    is_space_like: local_name == Some(&local_name!("mtext")),
                 };
                 let level_box = ArcRefCell::new(MathLevelBox::Text(ArcRefCell::new(text_block)));
                 box_slot.set(LayoutBox::MathLevel(level_box.clone()));
@@ -177,91 +171,6 @@ impl<'a, 'dom> TraversalHandler<'dom> for MathTraversalBuilder<'a, 'dom> {
     fn leave_display_contents(&mut self) {}
 }
 
-/// Typographic layout result returned by all MathML layout boxes.
-/// Eliminates the need to inspect or measure fragments after layout.
-pub(crate) struct MathLayoutOutput {
-    pub fragments: Vec<Fragment>,
-    pub inline_size: Au,
-    pub block_size: Au,
-    pub ascent: Au,
-    pub descent: Au,
-}
-impl MathLayoutOutput {
-    pub fn empty() -> Self {
-        Self {
-            fragments: Vec::new(),
-            inline_size: Au::zero(),
-            block_size: Au::zero(),
-            ascent: Au::zero(),
-            descent: Au::zero(),
-        }
-    }
-}
-
-// pub(crate) struct MathConstants {
-//     pub axis_height: Au,
-//     pub rule_thickness: Au,
-//     pub num_shift_up: Au,
-//     pub num_gap_min: Au,
-//     pub denom_shift_down: Au,
-//     pub denom_gap_min: Au,
-//     pub stack_top_shift_up: Au,
-//     pub stack_bottom_shift_down: Au,
-//     pub stack_gap_min: Au,
-// }
-// impl MathConstants {
-//     pub(crate) fn from_font(font: Option<&Font>, style: &ComputedValues) -> Self {
-//         let is_display = style.get_math_style() == MathStyle::Normal;
-//         let Some(font) = font else {
-//             return Self::default_fallback();
-//         };
-//         let metrics = &font.metrics;
-//         let default_rule = metrics.underline_size.max(Au::from_px(1));
-//         // Check if HarfBuzz font face has OpenType MATH table:
-//         // if hb_ot_math_has_data(font.hb_face) { ... query HarfBuzz ... }
-//         if let Some(hb_constants) = font.query_math_constants(is_display) {
-//             return hb_constants;
-//         }
-//         // Chapter 5.1 Fallback implementation:
-//         Self {
-//             axis_height: metrics.x_height / 2,
-//             rule_thickness: default_rule,
-//             num_shift_up: Au::zero(),
-//             num_gap_min: if is_display { default_rule * 3 } else { default_rule },
-//             denom_shift_down: Au::zero(),
-//             denom_gap_min: if is_display { default_rule * 3 } else { default_rule },
-//             stack_top_shift_up: Au::zero(),
-//             stack_bottom_shift_down: Au::zero(),
-//             stack_gap_min: if is_display { default_rule * 7 } else { default_rule * 3 },
-//         }
-//     }
-//     fn default_fallback() -> Self {
-//         Self {
-//             axis_height: Au::from_px(4),
-//             rule_thickness: Au::from_px(1),
-//             num_shift_up: Au::zero(),
-//             num_gap_min: Au::from_px(2),
-//             denom_shift_down: Au::zero(),
-//             denom_gap_min: Au::from_px(2),
-//             stack_top_shift_up: Au::zero(),
-//             stack_bottom_shift_down: Au::zero(),
-//             stack_gap_min: Au::from_px(7),
-//         }
-//     }
-// }
-
-/// Computes the math axis height (distance from baseline to math axis).
-pub(crate) fn math_axis_height(font: &FontRef) -> Au {
-    if let Some(metrics) = font.metrics.get() {
-        if metrics.x_height > Au::zero() {
-            metrics.x_height / 2
-        } else {
-            metrics.ascent / 3
-        }
-    } else {
-        Au::from_px(4)
-    }
-}
 /// Helper to translate a slice of fragments by a 2D offset.
 pub(crate) fn translate_fragments(fragments: &mut [Fragment], offset_x: Au, offset_y: Au) {
     let translation = PhysicalVec::new(offset_x, offset_y);
@@ -345,12 +254,12 @@ impl MathContainer {
             None,
         );
         let baselines = Baselines {
-            first: Some(output.ascent),
-            last: Some(output.ascent),
+            first: Some(output.metrics.ascent()),
+            last: Some(output.metrics.ascent()),
         };
         IndependentFormattingContextLayoutResult {
             fragments: output.fragments,
-            content_block_size: output.block_size,
+            content_block_size: output.metrics.size.block,
             content_inline_size_for_table: None,
             baselines,
             depends_on_block_constraints: true,
@@ -412,11 +321,73 @@ macro_rules! dispatch_math_box {
     };
 }
 impl MathLevelBox {
-    pub fn is_stretchy_operator(&self) -> bool {
+    pub(crate) fn is_in_flow(&self) -> bool {
+        self.with_base(|base| !base.style.get_box().position.is_absolutely_positioned())
+    }
+
+    pub(crate) fn is_space_like(&self) -> bool {
         match self {
-            MathLevelBox::Operator(op_block) => op_block.borrow().is_stretchy,
+            Self::Space(_) => true,
+            Self::Text(text) => text.borrow().is_space_like,
+            Self::Row(row) => row.borrow().is_space_like(),
+            Self::Padded(padded) => padded.borrow().inner_row.is_space_like(),
             _ => false,
         }
+    }
+
+    /// Structural communication is a query, independent of the layout result.
+    /// Recompute it from the current tree rather than caching ancestor pointers.
+    pub(crate) fn operator_properties(&self) -> Option<MathOperatorProperties> {
+        match self {
+            Self::Operator(operator) => Some(operator.borrow().operator_properties()),
+            Self::Row(row) => row.borrow().operator_properties(),
+            Self::Padded(padded) => padded.borrow().inner_row.operator_properties(),
+            Self::Fraction(fraction) => {
+                let fraction = fraction.borrow();
+                if let Some(numerator) = &fraction.numerator {
+                    return numerator.borrow().operator_properties();
+                }
+                fraction
+                    .inner_row
+                    .children
+                    .iter()
+                    .find_map(|child| {
+                        let child = child.borrow();
+                        child.is_in_flow().then(|| child.operator_properties())
+                    })
+                    .flatten()
+            },
+            _ => None,
+        }
+    }
+
+    /// A parent's measurement request uses the child's intrinsic contribution
+    /// and the parent's style as the child's containing-block style. Shared font
+    /// and positioning services remain explicit arguments to layout.
+    pub(crate) fn layout_for_math_parent(
+        &self,
+        layout_context: &LayoutContext,
+        positioning_context: &mut PositioningContext,
+        containing_block: &ContainingBlock,
+        parent_style: &ComputedValues,
+        stretch: Option<MathStretchTarget>,
+    ) -> MathLayoutResult {
+        let constraint_space =
+            ConstraintSpace::new(crate::sizing::SizeConstraint::default(), parent_style, None);
+        let sizes = self.inline_content_sizes(layout_context, &constraint_space);
+        let child_containing_block = ContainingBlock {
+            size: crate::ContainingBlockSize {
+                inline: sizes.sizes.max_content,
+                block: containing_block.size.block,
+            },
+            style: parent_style,
+        };
+        self.layout(
+            layout_context,
+            positioning_context,
+            &child_containing_block,
+            stretch,
+        )
     }
     pub(crate) fn construct_subtree(
         context: &LayoutContext,
@@ -485,55 +456,45 @@ impl MathLevelBox {
         layout_context: &LayoutContext,
         positioning_context: &mut PositioningContext,
         containing_block: &ContainingBlock,
-        target_size: Option<(Au, Au)>,
-    ) -> MathLayoutOutput {
+        target_size: Option<MathStretchTarget>,
+    ) -> MathLayoutResult {
         let output = match self {
-            MathLevelBox::Row(b) => {
-                b.borrow().layout(layout_context, positioning_context, containing_block, target_size)
-            }
-            MathLevelBox::Space(b) => {
-                b.borrow().layout(layout_context, positioning_context, containing_block, target_size)
-            }
-            MathLevelBox::Fraction(b) => {
-                b.borrow().layout(layout_context, positioning_context, containing_block, target_size)
-            }
-            MathLevelBox::Text(b) => {
-                b.borrow().layout(layout_context, positioning_context, containing_block, target_size)
-            }
-            MathLevelBox::Operator(b) => {
-                b.borrow().layout(layout_context, positioning_context, containing_block, target_size)
-            }
-            MathLevelBox::Padded(b) => {
-                // Adapts existing 3-argument layout in mpadded.rs to MathLayoutOutput
-                let writing_mode = b.borrow().base.style.writing_mode;
-                let fragments = b.borrow().layout(layout_context, positioning_context, containing_block);
-                let mut block_size = Au::zero();
-                let mut inline_size = Au::zero();
-                let mut ascent = Au::zero();
-                for f in &fragments {
-                    if let Some(base) = f.base() {
-                        let rect = base.rect();
-                        inline_size = inline_size.max(rect.origin.x + rect.size.width);
-                        block_size = block_size.max(rect.size.height);
-                    }
-                    if let Fragment::Box(box_frag) = f {
-                        if let Some(first_baseline) = box_frag.baselines(writing_mode).first {
-                            ascent = ascent.max(first_baseline);
-                        }
-                    }
-                }
-                if ascent.is_zero() {
-                    ascent = block_size;
-                }
-                let descent = block_size - ascent;
-                MathLayoutOutput {
-                    fragments,
-                    inline_size,
-                    block_size,
-                    ascent,
-                    descent,
-                }
-            }
+            MathLevelBox::Row(b) => b.borrow().layout(
+                layout_context,
+                positioning_context,
+                containing_block,
+                target_size,
+            ),
+            MathLevelBox::Space(b) => b.borrow().layout(
+                layout_context,
+                positioning_context,
+                containing_block,
+                target_size,
+            ),
+            MathLevelBox::Fraction(b) => b.borrow().layout(
+                layout_context,
+                positioning_context,
+                containing_block,
+                target_size,
+            ),
+            MathLevelBox::Text(b) => b.borrow().layout(
+                layout_context,
+                positioning_context,
+                containing_block,
+                target_size,
+            ),
+            MathLevelBox::Operator(b) => b.borrow().layout(
+                layout_context,
+                positioning_context,
+                containing_block,
+                target_size,
+            ),
+            MathLevelBox::Padded(b) => b.borrow().layout(
+                layout_context,
+                positioning_context,
+                containing_block,
+                target_size,
+            ),
         };
 
         self.with_base(|base| {

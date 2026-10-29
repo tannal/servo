@@ -17,18 +17,19 @@ use crate::dom::WeakLayoutBox;
 use crate::flow::IndependentFloatOrAtomicLayoutResult;
 use crate::formatting_contexts::IndependentFormattingContext;
 use crate::fragment_tree::Fragment;
-use crate::geom::{LogicalVec2, ToLogical};
+use crate::geom::{AuOrAuto, LogicalVec2, ToLogical};
 use crate::layout_box_base::LayoutBoxBase;
-use crate::mathml::MathLayoutOutput;
+use crate::mathml::{MathBoxMetrics, MathLayoutResult, MathStretchTarget};
 use crate::positioned::{PositioningContext, PositioningContextLength};
 use crate::sizing::InlineContentSizesResult;
-use crate::style_ext::ComputedValuesExt;
+use crate::style_ext::{ComputedValuesExt, PaddingBorderMargin};
 use crate::{ConstraintSpace, ContainingBlock};
 
 #[derive(Debug, MallocSizeOf)]
 pub(crate) struct MathTextBlock {
     pub base: LayoutBoxBase,
     pub formatting_context: IndependentFormattingContext,
+    pub is_space_like: bool,
 }
 
 impl MathTextBlock {
@@ -53,8 +54,8 @@ impl MathTextBlock {
         layout_context: &LayoutContext,
         positioning_context: &mut PositioningContext,
         containing_block: &ContainingBlock,
-        _target_size: Option<(Au, Au)>,
-    ) -> MathLayoutOutput {
+        _target_size: Option<MathStretchTarget>,
+    ) -> MathLayoutResult {
         // TODO: Text-only tokens without break opportunities need the ink-metric
         // path specified by MathML Core, rather than CSS line-box metrics.
         // IndependentFormattingContext::layout lays out content only. Use the
@@ -76,6 +77,25 @@ impl MathTextBlock {
         let ascent = baselines
             .first
             .map_or(size.block, |baseline| pbm_sums.block_start + baseline);
+        // Reuse the atomic layout's resolved decorations, including used auto
+        // margins, rather than resolving the CSS box a second time.
+        let padding = fragment.padding.to_logical(writing_mode);
+        let border = fragment.border.to_logical(writing_mode);
+        let pbm = PaddingBorderMargin {
+            padding,
+            border,
+            margin: fragment
+                .margin
+                .to_logical(writing_mode)
+                .map(|value| AuOrAuto::LengthPercentage(*value)),
+            padding_border_sums: (padding + border).sum(),
+        };
+        let metrics = MathBoxMetrics::new(
+            content_size.inline,
+            content_size.block,
+            ascent - pbm_sums.block_start,
+        )
+        .with_padding_border_margin(&pbm);
 
         // The math parent places the margin box. BoxFragment stores the content
         // rectangle, and its baselines are relative to that content rectangle.
@@ -96,12 +116,11 @@ impl MathTextBlock {
         );
         positioning_context.append(child_positioning_context);
 
-        MathLayoutOutput {
+        MathLayoutResult {
             fragments: vec![fragment],
-            inline_size: size.inline,
-            block_size: size.block,
-            ascent,
-            descent: size.block - ascent,
+            // CSS-flow fallback uses content edges as ink baselines. A dedicated
+            // text-only token path must supply shaped glyph bounds instead.
+            metrics,
         }
     }
 

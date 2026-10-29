@@ -2,8 +2,6 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
-use std::sync::Arc;
-
 use app_units::Au;
 use fonts::Font;
 use layout_api::{LayoutElement, LayoutNode};
@@ -28,15 +26,14 @@ use crate::cell::ArcRefCell;
 use crate::context::LayoutContext;
 use crate::dom::WeakLayoutBox;
 use crate::dom_traversal::NodeAndStyleInfo;
-use crate::formatting_contexts::Baselines;
-use crate::fragment_tree::{BoxFragment, Fragment, MathPaintInfo};
-use crate::geom::{LogicalRect, LogicalVec2, PhysicalPoint, PhysicalRect, PhysicalSize};
+use crate::fragment_tree::MathPaintInfo;
+use crate::geom::{PhysicalPoint, PhysicalRect, PhysicalSize};
 use crate::layout_box_base::LayoutBoxBase;
-use crate::mathml::{MathLayoutOutput, translate_fragments};
+use crate::mathml::{MathBoxMetrics, MathLayoutResult, MathStretchTarget, translate_fragments};
 use crate::positioned::PositioningContext;
-use crate::sizing::{ContentSizes, InlineContentSizesResult, Size, SizeConstraint};
+use crate::sizing::{ContentSizes, InlineContentSizesResult, Size};
 use crate::style_ext::LayoutStyle;
-use crate::{ConstraintSpace, ContainingBlock, ContainingBlockSize};
+use crate::{ConstraintSpace, ContainingBlock};
 
 /// Baseline shifts after enforcing the font's minimum clearances.
 #[derive(Debug, Clone, Copy)]
@@ -302,16 +299,23 @@ impl MathFractionBlock {
             .borrow()
             .inline_content_sizes(layout_context, constraint_space);
 
+        let pbm = LayoutStyle::Default(&self.base().style)
+            .content_box_sizes_and_padding_border_margin(&constraint_space.into())
+            .pbm;
+        let extra = pbm.padding_border_sums.inline + pbm.margin.auto_is(Au::zero).inline_sum();
+
         InlineContentSizesResult {
             sizes: ContentSizes {
                 min_content: numerator_sizes
                     .sizes
                     .min_content
-                    .max(denominator_sizes.sizes.min_content),
+                    .max(denominator_sizes.sizes.min_content)
+                    + extra,
                 max_content: numerator_sizes
                     .sizes
                     .max_content
-                    .max(denominator_sizes.sizes.max_content),
+                    .max(denominator_sizes.sizes.max_content)
+                    + extra,
             },
             depends_on_block_constraints: numerator_sizes.depends_on_block_constraints
                 || denominator_sizes.depends_on_block_constraints,
@@ -323,14 +327,14 @@ impl MathFractionBlock {
         layout_context: &LayoutContext,
         positioning_context: &mut PositioningContext,
         containing_block: &ContainingBlock,
-        target_size: Option<(Au, Au)>,
-    ) -> MathLayoutOutput {
+        target_size: Option<MathStretchTarget>,
+    ) -> MathLayoutResult {
         let Some((numerator, denominator)) = self.fraction_children() else {
             return self.inner_row.layout(
                 layout_context,
                 positioning_context,
                 containing_block,
-                None,
+                target_size,
             );
         };
 
@@ -343,61 +347,44 @@ impl MathFractionBlock {
         let physical_padding = pbm.padding.to_physical(writing_mode);
         let physical_border = pbm.border.to_physical(writing_mode);
 
-        let constraint_space = ConstraintSpace::new(SizeConstraint::default(), style, None);
-
-        let numerator_sizes = numerator
-            .borrow()
-            .inline_content_sizes(layout_context, &constraint_space);
-        let denominator_sizes = denominator
-            .borrow()
-            .inline_content_sizes(layout_context, &constraint_space);
-
-        let numerator_cb = ContainingBlock {
-            size: ContainingBlockSize {
-                inline: numerator_sizes.sizes.max_content,
-                block: containing_block.size.block,
-            },
-            style: containing_block.style,
-        };
-        let denominator_cb = ContainingBlock {
-            size: ContainingBlockSize {
-                inline: denominator_sizes.sizes.max_content,
-                block: containing_block.size.block,
-            },
-            style: containing_block.style,
-        };
-
-        // Only the numerator receives the stretch target.
-        let mut numerator_output = numerator.borrow().layout(
+        // An incoming constraint belongs only to the embellished numerator.
+        let numerator = numerator.borrow();
+        let stretch = target_size.filter(|_| numerator.operator_properties().is_some());
+        let mut numerator_output = numerator.layout_for_math_parent(
             layout_context,
             positioning_context,
-            &numerator_cb,
-            target_size,
+            containing_block,
+            style,
+            stretch,
         );
-        let mut denominator_output =
-            denominator
-                .borrow()
-                .layout(layout_context, positioning_context, &denominator_cb, None);
+        let mut denominator_output = denominator.borrow().layout_for_math_parent(
+            layout_context,
+            positioning_context,
+            containing_block,
+            style,
+            None,
+        );
 
         let padding_border_inline = physical_padding.left
             + physical_padding.right
             + physical_border.left
             + physical_border.right;
-        let padding_border_block = physical_padding.top
-            + physical_padding.bottom
-            + physical_border.top
-            + physical_border.bottom;
 
         let available_inline_size =
             (containing_block.size.inline - padding_border_inline).max(Au::zero());
         let children_width = numerator_output
-            .inline_size
-            .max(denominator_output.inline_size);
+            .metrics
+            .size
+            .inline
+            .max(denominator_output.metrics.size.inline);
 
         let content_width = box_sizes.content_box_sizes.inline.resolve(
             LogicalAxis::Inline,
             Size::FitContent,
-            || containing_block.size.inline,
+            // This is a content-box minimum, not the child's intrinsic margin
+            // box contribution. Using the latter here adds our own decorations
+            // to the bar width (including the default 1px inline padding).
+            Au::zero,
             Some(available_inline_size),
             || children_width.into(),
             false,
@@ -409,21 +396,20 @@ impl MathFractionBlock {
         let metrics = FractionMetrics::new(font.as_ref().map(|font| &***font), is_display_style);
         let thickness = self.resolve_line_thickness(metrics.default_thickness);
 
-        // TODO: Clearance must use ink metrics of the children's margin boxes.
-        // MathLayoutOutput currently exposes only layout ascent and descent.
+        // Clearance uses ink baselines; enclosing geometry uses line metrics.
         let shifts = metrics.compute_shifts(
             thickness,
-            numerator_output.descent,
-            denominator_output.ascent,
+            numerator_output.metrics.ink_descent,
+            denominator_output.metrics.ink_ascent,
         );
 
         // Either child can cross the fraction baseline. Include both translated
         // boxes in each extent, including for stacks with no fraction rule.
-        let mut fraction_ascent = (shifts.numerator_shift_up + numerator_output.ascent)
-            .max(denominator_output.ascent - shifts.denominator_shift_down)
+        let mut fraction_ascent = (shifts.numerator_shift_up + numerator_output.metrics.ascent())
+            .max(denominator_output.metrics.ascent() - shifts.denominator_shift_down)
             .max(Au::zero());
-        let mut fraction_descent = (numerator_output.descent - shifts.numerator_shift_up)
-            .max(shifts.denominator_shift_down + denominator_output.descent)
+        let mut fraction_descent = (numerator_output.metrics.descent() - shifts.numerator_shift_up)
+            .max(shifts.denominator_shift_down + denominator_output.metrics.descent())
             .max(Au::zero());
 
         if thickness > Au::zero() {
@@ -435,13 +421,14 @@ impl MathFractionBlock {
 
         // MathML Core centers the children; legacy numalign/denomalign do not
         // introduce a separate alignment policy here.
-        let numerator_x = (content_width - numerator_output.inline_size) / 2;
-        let numerator_y = fraction_ascent - shifts.numerator_shift_up - numerator_output.ascent;
+        let numerator_x = (content_width - numerator_output.metrics.size.inline) / 2;
+        let numerator_y =
+            fraction_ascent - shifts.numerator_shift_up - numerator_output.metrics.ascent();
         translate_fragments(&mut numerator_output.fragments, numerator_x, numerator_y);
 
-        let denominator_x = (content_width - denominator_output.inline_size) / 2;
+        let denominator_x = (content_width - denominator_output.metrics.size.inline) / 2;
         let denominator_y =
-            fraction_ascent + shifts.denominator_shift_down - denominator_output.ascent;
+            fraction_ascent + shifts.denominator_shift_down - denominator_output.metrics.ascent();
         translate_fragments(
             &mut denominator_output.fragments,
             denominator_x,
@@ -464,45 +451,13 @@ impl MathFractionBlock {
         children.extend(numerator_output.fragments);
         children.extend(denominator_output.fragments);
 
-        let content_rect = LogicalRect {
-            start_corner: LogicalVec2 {
-                inline: pbm.padding.inline_start + pbm.border.inline_start,
-                block: pbm.padding.block_start + pbm.border.block_start,
-            },
-            size: LogicalVec2 {
-                inline: content_width,
-                block: content_block,
-            },
-        }
-        .as_physical(Some(containing_block));
-
-        let fraction_baseline = physical_padding.top + physical_border.top + fraction_ascent;
-        // Fragment baselines are content-relative. MathLayoutOutput uses the
-        // outer ascent, so only that value includes the border and padding.
-        let baselines = Baselines {
-            first: Some(fraction_ascent),
-            last: Some(fraction_ascent),
-        };
-
-        let box_fragment = BoxFragment::new(
-            self.base().base_fragment_info.clone(),
-            style.clone(),
+        MathLayoutResult::from_content(
+            self.base(),
+            containing_block,
+            &pbm,
             children,
-            content_rect,
-            physical_padding,
-            physical_border,
-            pbm.margin.auto_is(Au::zero).to_physical(writing_mode),
-            None,
+            MathBoxMetrics::new(content_width, content_block, fraction_ascent),
+            bar_rect.map(|bar_rect| MathPaintInfo::Fraction { bar_rect }),
         )
-        .with_baselines(baselines)
-        .with_math_paint_info(bar_rect.map(|bar_rect| MathPaintInfo::Fraction { bar_rect }));
-
-        MathLayoutOutput {
-            fragments: vec![Fragment::Box(Arc::new(box_fragment))],
-            inline_size: content_width + padding_border_inline,
-            block_size: content_block + padding_border_block,
-            ascent: fraction_baseline,
-            descent: fraction_descent + physical_padding.bottom + physical_border.bottom,
-        }
     }
 }
