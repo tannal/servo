@@ -2,6 +2,19 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
+//! Operator capability queries and the current text-layout fallback.
+//!
+//! See [Core operators](https://w3c.github.io/mathml-core/#operator-fence-separator-or-accent-mo)
+//! and [glyph stretching](https://w3c.github.io/mathml-core/#algorithms-for-glyph-stretching).
+//! Compare [Blink operators](https://github.com/chromium/chromium/blob/main/third_party/blink/renderer/core/layout/mathml/math_operator_layout_algorithm.cc)
+//! and [Gecko MathMLChar](https://searchfox.org/mozilla-central/source/layout/mathml/nsMathMLChar.cpp).
+//! Real stretching selects a glyph variant or assembles parts, then returns its
+//! actual measurements. Merely enlarging a box or recentering text does not do that.
+//!
+//! The current hardcoded stretchiness defaults and symmetric default are partial
+//! operator policy. The intrinsic-axis table is separate and form-independent.
+//! Do not interpret either as a complete operator dictionary implementation.
+
 use app_units::Au;
 use euclid::num::Zero;
 use layout_api::{LayoutElement, LayoutNode};
@@ -28,6 +41,9 @@ use crate::sizing::{ComputeInlineContentSizes, InlineContentSizesResult, LazySiz
 use crate::style_ext::LayoutStyle;
 use crate::{ConstraintSpace, ContainingBlock};
 
+/// Partial compatibility fallback, not the Core operator dictionary. In
+/// particular, dictionary defaults depend on operator form, and a large operator
+/// is not automatically a stretchy fence. Keep this limitation visible to callers.
 fn is_default_stretchy_char(ch: char) -> bool {
     matches!(
         ch,
@@ -42,6 +58,8 @@ fn is_default_stretchy_char(ch: char) -> bool {
          '‾' | '_' | '⁀' | '⏞' | '⏟' | '⏠' | '⏡'
     )
 }
+/// Collect direct text children for the current operator policy parser.
+/// This does not prove that mixed descendant content is a simple glyph token.
 fn collect_text_content<'dom>(info: &NodeAndStyleInfo<'dom>) -> String {
     let mut text = String::new();
     for child in info.node.flat_tree_children() {
@@ -51,6 +69,9 @@ fn collect_text_content<'dom>(info: &NodeAndStyleInfo<'dom>) -> String {
     }
     text
 }
+/// Recognize a single trimmed character and an explicit stretchy boolean.
+/// The current defaults remain incomplete; normalization and dictionary form
+/// resolution must not be inferred from this small parser.
 fn parse_operator_info(info: &NodeAndStyleInfo, text_content: &str) -> (bool, Option<char>) {
     let mut operator_char = None;
     let mut is_stretchy = false;
@@ -68,15 +89,25 @@ fn parse_operator_info(info: &NodeAndStyleInfo, text_content: &str) -> (bool, Op
     }
     (is_stretchy, operator_char)
 }
+/// Core operator state plus the IFC used by the current fallback implementation.
+/// A capability query is cheap structural information; a completed glyph stretch
+/// must ultimately come from shaping, not from this state alone.
 #[derive(Debug, MallocSizeOf)]
 pub(crate) struct MathOperatorBlock {
+    /// Styled operator identity and fragment bookkeeping.
     pub base: LayoutBoxBase,
+    /// Actual text layout currently used instead of a stretchy-glyph shaper.
     pub inline_formatting_context: InlineFormattingContext,
+    /// Explicit attribute or current partial default lookup, not glyph coverage capability.
     pub is_stretchy: bool,
+    /// Single normalized character if recognized; multiple characters disable glyph stretching.
     pub operator_char: Option<char>,
+    /// Current symmetry policy; the constructor still uses an incomplete dictionary fallback.
     symmetric: bool,
 }
 impl MathOperatorBlock {
+    /// Capture current DOM-derived properties and retain the IFC used by the
+    /// text fallback. Capability queries do not shape a glyph or select a variant.
     pub(crate) fn construct(
         info: &NodeAndStyleInfo,
         inline_formatting_context: InlineFormattingContext,
@@ -101,6 +132,8 @@ impl MathOperatorBlock {
                 .unwrap_or(true),
         }
     }
+    /// Use current IFC intrinsic advances. The complete Core intrinsic contribution
+    /// for vertically stretched variants is not implemented by this delegation.
     pub(crate) fn inline_content_sizes(
         &self,
         layout_context: &LayoutContext,
@@ -109,6 +142,11 @@ impl MathOperatorBlock {
         self.inline_formatting_context
             .compute_inline_content_sizes(layout_context, constraint_space)
     }
+    /// Run the text fallback, then interpret a compatible block target at the core
+    /// operator. Symmetry uses this operator's font axis, not its parent's font axis.
+    /// Current behavior centers natural text inside a larger declared box; it does
+    /// not paint a larger glyph. Inline requests remain natural-sized until shaping
+    /// can produce actual horizontal variants/assemblies.
     pub(crate) fn layout(
         &self,
         layout_context: &LayoutContext,
@@ -193,6 +231,9 @@ impl MathOperatorBlock {
         MathLayoutResult::from_content(&self.base, containing_block, &pbm, fragments, metrics, None)
     }
 
+    /// Report intrinsic axis independently of the stretchy flag. Multi-character
+    /// content does not advertise glyph stretching. Wrapper queries use this result
+    /// before sibling measurement, avoiding a layout pass just to classify a child.
     pub(crate) fn operator_properties(&self) -> MathOperatorProperties {
         MathOperatorProperties {
             stretchy: self.is_stretchy && self.operator_char.is_some(),
@@ -207,7 +248,11 @@ impl MathOperatorBlock {
         }
     }
 
+    /// Current no-op lifecycle hook; it does not register a separate math paint object.
     pub(crate) fn attached_to_tree(&self, _layout_box: WeakLayoutBox) {}
+    /// Update the IFC and, when the supplied DOM node is an mo, refresh the current
+    /// operator policy. The node guard accommodates existing ancestor repair calls;
+    /// it does not solve the broader child-style lifecycle problem.
     pub(crate) fn repair_style(
         &mut self,
         context: &SharedStyleContext,

@@ -2,6 +2,17 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
+//! CSS-flow integration for mathematical tokens, including embedded content.
+//!
+//! [Core token layout](https://w3c.github.io/mathml-core/#layout-of-mtext) distinguishes
+//! text-only measurement from more general token content. This implementation
+//! currently uses the atomic CSS-flow path; returning an ink field does not make
+//! that path a shaped-glyph ink measurement.
+//! Compare [Blink token measurement](https://github.com/chromium/chromium/blob/main/third_party/blink/renderer/core/layout/mathml/math_token_layout_algorithm.cc),
+//! which obtains glyph bounds and positions its inline result against that baseline.
+//! A future Servo path must retain actual shaping/fallback-font information rather
+//! than guessing ink from font ascent or recursively unioning painted overflow.
+
 use std::sync::Arc;
 
 use app_units::Au;
@@ -25,14 +36,22 @@ use crate::sizing::InlineContentSizesResult;
 use crate::style_ext::{ComputedValuesExt, PaddingBorderMargin};
 use crate::{ConstraintSpace, ContainingBlock};
 
+/// Math-token wrapper around ordinary CSS layout. Structural token identity is
+/// retained even when content uses HTML/CSS layout; measured size and space-like
+/// classification are intentionally independent.
 #[derive(Debug, MallocSizeOf)]
 pub(crate) struct MathTextBlock {
+    /// Token identity/style; retained independently of the CSS content implementation.
     pub base: LayoutBoxBase,
+    /// CSS-flow engine responsible for token descendants, including embedded HTML.
     pub formatting_context: IndependentFormattingContext,
+    /// Structural mtext classification; does not mean the returned dimensions are zero.
     pub is_space_like: bool,
 }
 
 impl MathTextBlock {
+    /// Ask the atomic CSS wrapper for outer contributions, including used sizing
+    /// properties and decorations; a math parent must not add them a second time.
     pub(crate) fn inline_content_sizes(
         &self,
         layout_context: &LayoutContext,
@@ -49,6 +68,14 @@ impl MathTextBlock {
         )
     }
 
+    /// Resolve the atomic CSS box once and adapt its measurements to the math
+    /// contract. Keep its fragment baseline content-relative and return the outer
+    /// baseline to the parent. Preserve resolved auto margins when constructing
+    /// clearance extents. Handle locally owned positioned descendants before appending
+    /// remaining positioning state to the parent collector.
+    ///
+    /// This path uses content-edge clearance as a fallback. A tall CSS line box can
+    /// still affect token layout; this function does not obtain tight glyph ink bounds.
     pub(crate) fn layout(
         &self,
         layout_context: &LayoutContext,
@@ -124,10 +151,13 @@ impl MathTextBlock {
         }
     }
 
+    /// Forward ownership registration to the ordinary CSS formatting context.
     pub(crate) fn attached_to_tree(&self, layout_box: WeakLayoutBox) {
         self.formatting_context.attached_to_tree(layout_box);
     }
 
+    /// Repair both the math wrapper and its delegated CSS formatting context;
+    /// space-like classification depends on token identity rather than measured size.
     pub(crate) fn repair_style(
         &mut self,
         context: &SharedStyleContext,

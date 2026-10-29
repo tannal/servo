@@ -2,6 +2,23 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
+//! Fraction layout separates font policy, clearance constraints, and placement.
+//!
+//! [Core fractions](https://w3c.github.io/mathml-core/#fractions-mfrac) are the
+//! behavior target. Historical comparison: The TeXbook Appendix G, pp. 444-445,
+//! rules 15a-e, and TeX's `make_fraction` use measured numerator/denominator boxes,
+//! preferred shifts, then clearance corrections. TeX's ruled-fraction clearance
+//! uses actual rule thickness; Core's fallback constants are resolved separately.
+//! Do not substitute one policy for the other just because the formulas look alike.
+//!
+//! Compare [Blink](https://github.com/chromium/chromium/blob/main/third_party/blink/renderer/core/layout/mathml/math_fraction_layout_algorithm.cc),
+//! [Gecko](https://searchfox.org/mozilla-central/source/layout/mathml/nsMathMLmfracFrame.cpp),
+//! [WebKit](https://github.com/WebKit/WebKit/blob/main/Source/WebCore/rendering/mathml/RenderMathMLFraction.cpp),
+//! [Typst](https://github.com/typst/typst/blob/main/crates/typst-layout/src/math/fraction.rs), and
+//! [KaTeX](https://github.com/KaTeX/KaTeX/blob/main/src/functions/genfrac.ts).
+//! Those files differ in legacy options, fallback policy, and box representation;
+//! these links are comparisons rather than a claim of identical behavior.
+
 use app_units::Au;
 use fonts::Font;
 use layout_api::{LayoutElement, LayoutNode};
@@ -38,27 +55,42 @@ use crate::{ConstraintSpace, ContainingBlock};
 /// Baseline shifts after enforcing the font's minimum clearances.
 #[derive(Debug, Clone, Copy)]
 struct FractionShifts {
+    /// Positive distance moving the numerator baseline toward line-over.
     numerator_shift_up: Au,
+    /// Positive distance moving the denominator baseline toward line-under.
     denominator_shift_down: Au,
 }
 
 /// Font-dependent inputs shared by fraction and stack layout.
 #[derive(Debug, Clone, Copy)]
 struct FractionMetrics {
+    /// Alphabetic-baseline to rule-center distance (AxisHeight), in scaled Au.
     axis_height: Au,
+    /// Font default used before resolving the author's linethickness, including percentages.
     default_thickness: Au,
+    /// Preferred numerator baseline shift for a ruled fraction; clearance may increase it.
     numerator_min_shift_up: Au,
+    /// Preferred denominator baseline shift for a ruled fraction; clearance may increase it.
     denominator_min_shift_down: Au,
+    /// Minimum clearance from numerator ink to the rule's upper edge.
     numerator_gap_min: Au,
+    /// Minimum clearance from the rule's lower edge to denominator ink.
     denominator_gap_min: Au,
+    /// Preferred upper baseline shift for a zero-rule stack.
     stack_top_shift_up: Au,
+    /// Preferred lower baseline shift for a zero-rule stack.
     stack_bottom_shift_down: Au,
+    /// Minimum combined inter-child clearance when there is no fraction rule.
     stack_gap_min: Au,
 }
 
 impl FractionMetrics {
     /// Resolve scaled font constants once, independently of author linethickness.
     /// https://w3c.github.io/mathml-core/#layout-constants-mathconstants
+    /// Select normal/compact constants from one font instance. Font access already
+    /// scales values into Au. A zero constant is valid and must not trigger fallback.
+    /// The no-MATH path initializes lazy ordinary metrics; those platform metrics can
+    /// be synthesized, so this is not a guarantee of exact raw OS/2/post table values.
     fn new(font: Option<&Font>, is_display_style: bool) -> Self {
         if let Some(constants) = font.and_then(|font| font.math_constants(is_display_style)) {
             return Self {
@@ -97,6 +129,20 @@ impl FractionMetrics {
         }
     }
 
+    /// Solve baseline constraints in signed baseline-relative coordinates.
+    ///
+    /// For a rule: U >= axis + t/2 + numerator_gap + numerator_descent,
+    /// and D >= t/2 + denominator_gap + denominator_ascent - axis. Each
+    /// preferred shift is independently increased until its inequality holds.
+    ///
+    /// For a stack: gap = U - numerator_descent + D - denominator_ascent.
+    /// Split a positive deficit between U and D, preserving the odd-Au remainder.
+    /// The input extents are the children's clearance measurements, not font ascents.
+    ///
+    /// See [Core ruled fractions](https://w3c.github.io/mathml-core/#fraction-with-nonzero-line-thickness)
+    /// and [stacks](https://w3c.github.io/mathml-core/#fraction-with-zero-line-thickness).
+    /// TeXbook Appendix G rules 15c-d have the same constraint-solving shape; their
+    /// font parameters and thickness-dependent spacing policy are not substituted here.
     fn compute_shifts(
         &self,
         thickness: Au,
@@ -136,16 +182,27 @@ impl FractionMetrics {
     }
 }
 
+/// Box-tree state for a fraction, not a cached measurement. Numerator and
+/// denominator ownership is distinct from the fallback row's child list. Strip
+/// neither CSS styling from the wrapper nor mathematical paint data from its result.
 #[derive(Debug, MallocSizeOf)]
 pub(crate) struct MathFractionBlock {
+    /// Owns the styled base and fallback children; valid fractions retain out-of-flow children here.
     pub inner_row: MathRowBlock,
+    /// First in-flow child when arity is valid; paired with denominator.
     pub numerator: Option<ArcRefCell<MathLevelBox>>,
+    /// Second in-flow child when arity is valid; never receives the parent stretch target.
     pub denominator: Option<ArcRefCell<MathLevelBox>>,
     #[ignore_malloc_size_of = "LengthPercentage does not allocate on the heap"]
+    /// Computed attribute value; percentages wait for the scaled default rule thickness.
     pub linethickness: Option<LengthPercentage>,
 }
 
 impl MathFractionBlock {
+    /// Partition children only after counting in-flow items. A valid fraction owns
+    /// two measured children; otherwise retain original order for row fallback.
+    /// This arity decision currently happens at construction, so tree/style changes
+    /// that alter participation must cause the appropriate reconstruction.
     pub(crate) fn construct(
         context: &LayoutContext,
         node_and_style_info: &NodeAndStyleInfo,
@@ -204,6 +261,9 @@ impl MathFractionBlock {
         }
     }
 
+    /// Read the DOM's parsed length-percentage and compute font-relative units using
+    /// the fraction's own style. Do not resolve percentages until font default rule
+    /// thickness is known. Creating this temporary style context is not a font cache.
     fn resolve_linethickness_attr<'dom, E>(
         element: Option<E>,
         context: &SharedStyleContext,
@@ -240,24 +300,31 @@ impl MathFractionBlock {
         Some(specified.to_computed_value(&computed_context))
     }
 
+    /// Borrow the styled base owned by the inner row; the fraction has one CSS box.
     pub(crate) fn base(&self) -> &LayoutBoxBase {
         &self.inner_row.base
     }
 
+    /// Mutable access to that same base for existing box-tree lifecycle operations.
     pub(crate) fn base_mut(&mut self) -> &mut LayoutBoxBase {
         &mut self.inner_row.base
     }
 
     #[inline]
+    /// Whether construction supplied both required in-flow operands.
     pub(crate) fn is_valid(&self) -> bool {
         self.fraction_children().is_some()
     }
 
+    /// Return operands as a pair so layout cannot proceed with only one operand.
     fn fraction_children(&self) -> Option<(&ArcRefCell<MathLevelBox>, &ArcRefCell<MathLevelBox>)> {
         self.numerator.as_ref().zip(self.denominator.as_ref())
     }
 
     /// Percentages resolve relative to the default FractionRuleThickness.
+    /// Clamp the resolved author value to zero. Absent/invalid attributes retain
+    /// the font default; an explicit zero selects stack layout. The default thickness
+    /// also remains distinct from gap constants derived during font resolution.
     pub(crate) fn resolve_line_thickness(&self, default_thickness: Au) -> Au {
         match &self.linethickness {
             Some(value) => value.to_used_value(default_thickness).max(Au::zero()),
@@ -265,6 +332,8 @@ impl MathFractionBlock {
         }
     }
 
+    /// Repair existing state and recompute font-relative attribute lengths. This
+    /// method does not redo child arity selection or replace DOM-tree reconstruction.
     pub(crate) fn repair_style(
         &mut self,
         context: &SharedStyleContext,
@@ -277,10 +346,15 @@ impl MathFractionBlock {
             Self::resolve_linethickness_attr(node.as_element(), context, new_style);
     }
 
+    /// Forward ownership bookkeeping through the inner row. This is lifecycle
+    /// propagation, not transmission of measured geometry to a mathematical parent.
     pub(crate) fn attached_to_tree(&self, layout_box: WeakLayoutBox) {
         self.inner_row.attached_to_tree(layout_box);
     }
 
+    /// Take the maximum operand contribution, then add the fraction's own CSS
+    /// decorations once. The returned contribution is outer width; it must never be
+    /// reused as an automatic minimum *content* width during layout.
     pub(crate) fn inline_content_sizes(
         &self,
         layout_context: &LayoutContext,
@@ -322,6 +396,15 @@ impl MathFractionBlock {
         }
     }
 
+    /// Measure operands, solve clearances, place them around one alphabetic
+    /// baseline, then finish the styled wrapper. A numerator may inherit stretching;
+    /// a denominator cannot. Line extents enclose both translated child boxes while
+    /// ink extents determine separation. CSS sizing and mathematical content geometry
+    /// are separate concepts even when their numerical sizes happen to agree.
+    ///
+    /// The rule is content-relative paint data using the fraction's color. It has
+    /// no independently styled margin/padding/border box. `from_content` owns the
+    /// wrapper inset; adding decorations again to child translations would double it.
     pub(crate) fn layout(
         &self,
         layout_context: &LayoutContext,
@@ -403,6 +486,11 @@ impl MathFractionBlock {
             denominator_output.metrics.ink_ascent,
         );
 
+        // In the coordinate system used below, U moves the numerator baseline
+        // above the fraction baseline and D moves the denominator below it.
+        // Its upper extent is therefore max(U + num_ascent, den_ascent - D),
+        // and its lower extent is max(num_descent - U, D + den_descent).
+        // These line extents are independent of the ink values used for gaps.
         // Either child can cross the fraction baseline. Include both translated
         // boxes in each extent, including for stacks with no fraction rule.
         let mut fraction_ascent = (shifts.numerator_shift_up + numerator_output.metrics.ascent())
@@ -435,6 +523,10 @@ impl MathFractionBlock {
             denominator_y,
         );
 
+        // `fraction_ascent` is the content-relative alphabetic baseline. The
+        // mathematical axis is axis_height above it; subtract half the rule
+        // thickness to obtain the rectangle's upper edge. Keep this rectangle
+        // independent of wrapper insets, which from_content adds exactly once.
         let bar_rect = (thickness > Au::zero()).then(|| {
             PhysicalRect::new(
                 PhysicalPoint::new(

@@ -73,13 +73,27 @@ pub(crate) struct BlockLevelLayoutInfo {
     pub block_margins_collapsed_with_children: CollapsedBlockMargins,
 }
 
+/// Extra drawing produced by a mathematical layout algorithm on an ordinary
+/// CSS box. This is paint input, not parent/child measurement or style state.
+/// Geometry is relative to the owning fragment's content origin; the shared
+/// traversal supplies clipping, transforms, visibility, stacking, and color.
+///
+/// A fraction rule has resolved thickness and color, not an independently styled
+/// child box. Compare [Core fractions](https://w3c.github.io/mathml-core/#fractions-mfrac)
+/// and [Blink's payload](https://github.com/chromium/chromium/blob/main/third_party/blink/renderer/core/layout/mathml/mathml_paint_info.h).
+/// Keep speculative measurement data in MathLayoutResult, not in rare paint data.
 #[derive(Clone, Copy, Debug, MallocSizeOf)]
 pub(crate) enum MathPaintInfo {
-    /// Rectangle relative to the owning box's content origin.
+    /// Fraction-rule rectangle in CSS app units, relative to the content origin.
+    /// The current painter may enforce a minimum thickness; this payload stores
+    /// the layout geometry and does not itself perform that paint adjustment.
     Fraction { bar_rect: PhysicalRect<Au> },
 
     /// Overbar rectangle relative to the owning box's content origin.
-    /// Radical glyph painting needs additional data when implemented.
+    /// Radical glyph painting needs additional data when implemented. A rule
+    /// alone is not a complete msqrt/mroot result: shaping must provide the surd.
+    /// Compare [Typst radicals](https://github.com/typst/typst/blob/main/crates/typst-layout/src/math/radical.rs)
+    /// and TeXbook Appendix G rule 11; their sizing policies are not identical.
     Radical { rule_rect: PhysicalRect<Au> },
 }
 
@@ -93,6 +107,8 @@ pub(crate) struct BoxFragmentRareData {
     /// Paint bars for MathML <mfrac>, <msqrt> etc.
     /// Content-relative mathematical graphics produced by layout. These survive
     /// stacking-context construction and use the owning box's style when painted.
+    /// The optional boxed payload keeps ordinary CSS fragments small. It is not
+    /// a cache of child metrics, core-operator properties, or stretch requests.
     pub math_paint_info: Option<Box<MathPaintInfo>>,
 
     /// Information that is specific to a layout system (e.g., grid, table, etc.).

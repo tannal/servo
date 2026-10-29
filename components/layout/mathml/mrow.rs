@@ -1,3 +1,19 @@
+//! Rows coordinate their children and align returned measurements.
+//!
+//! See [Core rows](https://w3c.github.io/mathml-core/#group-sub-expressions-mrow)
+//! and the [block stretching algorithm](https://w3c.github.io/mathml-core/#algorithm-for-stretching-operators-along-the-block-axis).
+//! Compare [Blink rows](https://github.com/chromium/chromium/blob/main/third_party/blink/renderer/core/layout/mathml/math_row_layout_algorithm.cc),
+//! [WebKit rows](https://github.com/WebKit/WebKit/blob/main/Source/WebCore/rendering/mathml/RenderMathMLRow.cpp), and
+//! [Typst fences](https://github.com/typst/typst/blob/main/crates/typst-layout/src/math/fenced.rs).
+//! They demonstrate measuring surrounding material before sizing delimiters, but
+//! are not identical: WebKit's fallback minimum is not Core's zero-target procedure.
+//! TeX's Appendix G rule 19 also follows the measurement-before-delimiter pattern;
+//! its delimiter factor and shortfall are not MathML stretch constraints.
+//!
+//! This implementation currently sums advances without the complete italic-
+//! correction/operator-spacing algorithm. Out-of-flow children are excluded from
+//! row measurements, but running their layout is not a complete CSS hoisting path.
+
 use app_units::Au;
 use layout_api::{LayoutElement, LayoutNode};
 use malloc_size_of_derive::MallocSizeOf;
@@ -24,22 +40,35 @@ use crate::style_ext::LayoutStyle;
 use crate::{ConstraintSpace, ContainingBlock};
 use style::Zero;
 
+/// Controls which recursive structural query is valid for a box currently
+/// represented by a row. This is identity policy, not the glyph-stretch axis.
 #[derive(Debug, MallocSizeOf, PartialEq)]
 enum MathRowKind {
+    /// One embellished child plus space-like siblings may define the core operator.
     Grouping,
+    /// Fraction/script fallback follows its first in-flow child for operator identity.
     FirstChildOperator,
+    /// Radical fallback must not acquire operator identity merely from row layout.
     Other,
 }
 
+/// Source-ordered mathematical child list and its styled outer box. Content-only
+/// measurement/layout helpers allow an inferred row to share child coordination
+/// without creating another CSS decoration layer.
 #[derive(Debug, MallocSizeOf)]
 pub(crate) struct MathRowBlock {
+    /// Style, node identity, and fragment bookkeeping for the outer box.
     pub base: LayoutBoxBase,
+    /// Children in source order; their accepted results are placed in this order.
     pub children: Vec<ArcRefCell<MathLevelBox>>,
     /// Non-grouping elements currently using row fallback must not accidentally
     /// acquire grouping-element embellished-operator semantics.
+    /// Structural classification independent of the temporary row layout fallback.
     kind: MathRowKind,
 }
 impl MathRowBlock {
+    /// Preserve source order and select structural operator-identity rules.
+    /// Classifying script/radical names here does not implement their layout algorithms.
     pub(crate) fn construct(
         node_and_style_info: &NodeAndStyleInfo,
         children: Vec<ArcRefCell<MathLevelBox>>,
@@ -76,6 +105,9 @@ impl MathRowBlock {
         }
     }
 
+    /// Forward the current repair request to the existing child boxes. This is
+    /// existing lifecycle behavior; it is not a replacement for independently computed
+    /// child styles or reconstruction when participation changes.
     pub(crate) fn repair_style(
         &mut self,
         context: &SharedStyleContext,
@@ -87,11 +119,14 @@ impl MathRowBlock {
             child.borrow_mut().repair_style(context, node, new_style);
         }
     }
+    /// Propagate layout-box ownership to descendants without measuring them.
     pub(crate) fn attached_to_tree(&self, layout_box: WeakLayoutBox) {
         for child in &self.children {
             child.borrow().attached_to_tree(layout_box.clone());
         }
     }
+    /// Expose the outer intrinsic contribution by decorating the content-only
+    /// measurement once. Percentages retain the existing CSS intrinsic-size rules.
     pub(crate) fn inline_content_sizes(
         &self,
         layout_context: &LayoutContext,
@@ -107,6 +142,9 @@ impl MathRowBlock {
         result
     }
 
+    /// Sum in-flow contributions for the inferred row. This is currently the
+    /// advance-only part of the row algorithm: full operator spacing and italic
+    /// correction still need integration. Keeping this undecorated lets mpadded reuse it.
     pub(crate) fn content_inline_sizes(
         &self,
         layout_context: &LayoutContext,
@@ -136,6 +174,10 @@ impl MathRowBlock {
     }
     /// Locate the unique embellished child, ignoring only in-flow space-like
     /// siblings. This query does not perform layout or retain a borrowed child.
+    /// Grouping rows ignore space-like siblings and require one remaining operator.
+    /// First-child containers stop at their first in-flow child, even if a later
+    /// child would qualify. `None` means no core operator, not zero dimensions.
+    /// See <https://w3c.github.io/mathml-core/#embellished-operators>.
     pub(crate) fn embellished_operator_index(&self) -> Option<usize> {
         if self.kind == MathRowKind::Other {
             return None;
@@ -167,11 +209,16 @@ impl MathRowBlock {
         operator
     }
 
+    /// Follow the selected child and copy only properties needed by the layout
+    /// scheduler. Do not infer capability from the most recently returned rectangle.
     pub(crate) fn operator_properties(&self) -> Option<MathOperatorProperties> {
         let index = self.embellished_operator_index()?;
         self.children[index].borrow().operator_properties()
     }
 
+    /// Apply recursive structural classification to in-flow children. An empty
+    /// group qualifies; a nonempty mtext can qualify while still occupying space.
+    /// See <https://w3c.github.io/mathml-core/#definition-of-space-like-elements>.
     pub(crate) fn is_space_like(&self) -> bool {
         self.kind == MathRowKind::Grouping
             && self.children.iter().all(|child| {
@@ -180,6 +227,8 @@ impl MathRowBlock {
             })
     }
 
+    /// Wrap the content-only result in this row's CSS box. Even an empty row
+    /// can have padding, borders, margins, or a background.
     pub(crate) fn layout(
         &self,
         layout_context: &LayoutContext,
@@ -208,6 +257,19 @@ impl MathRowBlock {
 
     /// Also used by mpadded, which owns the CSS box around its inferred row.
     /// Apply no padding/border/margin here: the caller decorates the result once.
+    /// Coordinate a bounded sequence rather than a sibling messaging protocol:
+    ///
+    /// 1. Forward an inherited target only along the embellished child path.
+    /// 2. Otherwise measure children that do not need block stretching.
+    /// 3. If all in-flow children stretch, measure them against an explicit zero
+    ///    target using temporary positioning collectors; discard those side effects.
+    /// 4. Derive one shared target and perform the accepted stretchy layouts.
+    /// 5. Aggregate extents and align child baselines in source order.
+    ///
+    /// The Option accumulators distinguish an empty set from a legitimate zero or
+    /// negative extent. The accepted fragment list is content-relative. This helper
+    /// also returns MathLayoutResult, but its metrics are content-only until the caller
+    /// finishes the CSS wrapper; ordinary public box layout returns margin-box metrics.
     pub(crate) fn layout_contents(
         &self,
         layout_context: &LayoutContext,

@@ -1,3 +1,13 @@
+//! Requested dimensions and content displacement around an inferred row.
+//!
+//! See [Core mpadded](https://w3c.github.io/mathml-core/#adjust-space-around-content-mpadded).
+//! Its declared geometry can be smaller than the visible contents. Thus measuring
+//! fragment rectangles after placement cannot recover the declared baseline/size.
+//! Compare [Blink](https://github.com/chromium/chromium/blob/main/third_party/blink/renderer/core/layout/mathml/math_padded_layout_algorithm.cc)
+//! and [Gecko](https://searchfox.org/mozilla-central/source/layout/mathml/nsMathMLmpaddedFrame.cpp).
+//! This path currently parses a limited length-percentage representation; it should
+//! not be read as supporting every historical mpadded pseudo-unit or syntax.
+
 use app_units::Au;
 use layout_api::{LayoutElement, LayoutNode};
 use malloc_size_of_derive::MallocSizeOf;
@@ -30,25 +40,37 @@ use crate::style_ext::LayoutStyle;
 use crate::{ConstraintSpace, ContainingBlock};
 use style::Zero;
 
+/// One styled wrapper around inferred-row contents, with independent declared
+/// geometry and content displacement. A fragment's painted bounds cannot replace
+/// these declared metrics when the wrapper intentionally permits overflow.
 #[derive(Debug, MallocSizeOf)]
 pub(crate) struct MathPaddedBlock {
+    /// The single styled wrapper; the inferred row must not apply these decorations again.
     pub base: LayoutBoxBase,
     /// Inner mrow container used for initial layout & metric resolution
+    /// Undecorated inferred-row measurement and child coordination.
     pub inner_row: MathRowBlock,
 
     #[ignore_malloc_size_of = "LengthPercentage does not allocate on the heap"]
+    /// Requested inline content displacement; does not by itself increase declared width.
     pub lspace: Option<LengthPercentage>,
     #[ignore_malloc_size_of = "LengthPercentage does not allocate on the heap"]
+    /// Requested baseline-relative content displacement; positive moves content upward.
     pub voffset: Option<LengthPercentage>,
     #[ignore_malloc_size_of = "LengthPercentage does not allocate on the heap"]
+    /// Optional declared inline size override, independent of overflowing contents.
     pub width: Option<LengthPercentage>,
     #[ignore_malloc_size_of = "LengthPercentage does not allocate on the heap"]
+    /// Optional declared ascent override; not recovered from child fragment origins.
     pub height: Option<LengthPercentage>,
     #[ignore_malloc_size_of = "LengthPercentage does not allocate on the heap"]
+    /// Optional declared descent override; separate from content displacement.
     pub depth: Option<LengthPercentage>,
 }
 
 impl MathPaddedBlock {
+    /// Build the inferred row and compute the supported attribute values using
+    /// the element's style. Keep them separate from the eventual child measurements.
     pub(crate) fn construct(
         context: &LayoutContext,
         node_and_style_info: &NodeAndStyleInfo,
@@ -119,6 +141,8 @@ impl MathPaddedBlock {
         }
     }
 
+    /// Repair wrapper/row styles. This existing path does not currently reparse
+    /// mpadded attributes; documentation must not imply dynamic attribute support.
     pub(crate) fn repair_style(
         &mut self,
         context: &SharedStyleContext,
@@ -129,15 +153,20 @@ impl MathPaddedBlock {
         self.inner_row.repair_style(context, node, new_style);
     }
 
+    /// Forward descendant ownership through the inferred row.
     pub(crate) fn attached_to_tree(&self, layout_box: WeakLayoutBox) {
         self.inner_row.attached_to_tree(layout_box);
     }
 
     #[inline]
+    /// Resolve the stored length-percentage against the basis selected by the
+    /// caller; this helper does not implement historical height/depth pseudo-units.
     fn resolve_length(&self, length: &Option<LengthPercentage>, base_val: Au) -> Option<Au> {
         length.as_ref().map(|lp| lp.to_used_value(base_val))
     }
 
+    /// Measure the inferred row without wrapper decorations, apply a supported
+    /// width override, and decorate once. Content displacement does not expand width.
     pub(crate) fn inline_content_sizes(
         &self,
         layout_context: &LayoutContext,
@@ -172,6 +201,11 @@ impl MathPaddedBlock {
         }
     }
 
+    /// Read inferred-row width/ascent/descent directly, apply supported declared
+    /// size overrides, and translate the children relative to the declared baseline.
+    /// Positive voffset moves the content upward without increasing declared height.
+    /// The RTL branch below is the current horizontal mapping, not general orthogonal
+    /// writing-mode support. Finish only the mpadded wrapper, not an extra styled row.
     pub(crate) fn layout(
         &self,
         layout_context: &LayoutContext,

@@ -20,15 +20,32 @@ use crate::style_ext::PaddingBorderMargin;
 
 /// Requested coverage, not a forced CSS size. The operator owns symmetry,
 /// min/max-size resolution, and the choice of a glyph variant or assembly.
+/// An absent target requests natural layout; an explicit zero target is still a
+/// stretch request. Keep those cases distinct during the all-stretchy row pass.
+/// Inline coverage is needed by future under/over algorithms; the current operator
+/// path does not implement horizontal glyph stretching.
+///
+/// References: [Core layout inputs](https://w3c.github.io/mathml-core/#layout-algorithms),
+/// [Blink constraints](https://github.com/chromium/chromium/blob/main/third_party/blink/renderer/core/layout/constraint_space.h),
+/// and Gecko's `Stretch` in the interface linked from the parent module.
 #[derive(Clone, Copy, Debug)]
 pub(crate) enum MathStretchTarget {
+    /// Requested inline coverage; not a replacement for CSS width.
     Inline(Au),
+    /// Requested baseline-relative block coverage, preserving asymmetry.
+    /// `ascent` covers the line-over side; `descent` covers the line-under side.
+    /// Both use the operator's alphabetic baseline as their common reference.
     Block { ascent: Au, descent: Au },
 }
 
+/// Intrinsic operator direction in logical coordinates, independent of whether
+/// stretching is enabled. A stretchy flag alone cannot identify which row pass
+/// should defer an operator.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) enum MathStretchAxis {
+    /// Along the inline progression, for example a horizontal arrow.
     Inline,
+    /// Along the block dimension, for example a parenthesis.
     Block,
 }
 
@@ -36,27 +53,38 @@ pub(crate) enum MathStretchAxis {
 /// Resolve it by querying the core operator, not by measuring its fragments.
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct MathOperatorProperties {
+    /// Intrinsic axis of the core operator, not a measurement of this wrapper.
     pub stretch_axis: MathStretchAxis,
+    /// Whether current operator policy permits stretching; false still permits natural layout.
     pub stretchy: bool,
 }
 
 /// Measurements in the parent's logical coordinate system. Returned results
 /// describe a margin box; algorithms construct content-box metrics first.
+/// Every distance is in Au after font scaling, not OpenType design units or
+/// TeX points. A measured zero is valid and does not indicate a missing metric.
 ///
 /// `baseline` is relative to block-start. Ink distances are measured from the
-/// alphabetic baseline and are signed. They follow MathML's ink-baseline rules,
-/// rather than representing painted overflow (shadows, transforms, etc.).
+/// alphabetic baseline and are signed. These are the current mathematical
+/// clearance measurements, not painted overflow (shadows, transforms, etc.).
+/// The margin adaptation below is an explicit Servo convention; compare Core's
+/// baseline definitions before extending this representation to other modes.
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct MathBoxMetrics {
+    /// Declared logical size: content-local during construction, margin-box size on return.
     pub size: LogicalVec2<Au>,
+    /// Alphabetic baseline offset from this measurement box's block-start edge.
     pub baseline: Au,
+    /// Signed extent above the alphabetic baseline used for mathematical clearance.
     pub ink_ascent: Au,
+    /// Signed extent below the alphabetic baseline used for mathematical clearance.
     pub ink_descent: Au,
 }
 
 impl MathBoxMetrics {
-    /// The default for a box without separately established ink baselines.
-    /// Token layout should supply glyph ink metrics when that path is available.
+    /// Initialize line and clearance extents from the declared box edges. This is
+    /// a fallback constructor, not a glyph-bounds query; a token producer must replace
+    /// the ink fields when it obtains real shaping measurements.
     pub fn new(inline_size: Au, block_size: Au, baseline: Au) -> Self {
         Self {
             size: LogicalVec2 {
@@ -69,18 +97,26 @@ impl MathBoxMetrics {
         }
     }
 
+    /// Distance from the alphabetic baseline to the line-over box edge in the
+    /// currently supported orientation; this is not the mathematical axis height.
     pub fn ascent(&self) -> Au {
         self.baseline
     }
 
+    /// Complement of the baseline offset within the declared block size. Derive it
+    /// instead of storing a second value that can disagree after resizing.
     pub fn descent(&self) -> Au {
         self.size.block - self.baseline
     }
 
     /// Convert content measurements to margin-box measurements exactly once.
     /// A positive border establishes the corresponding ink extent at its outer
-    /// edge. Include the resolved margins in the parent's clearance measurements
-    /// so adjacent notation cannot consume the child's requested outer spacing.
+    /// edge. The added margin extents are Servo's parent-clearance convention, exercised by
+    /// `frac-bar-002.html`; do not confuse them with a painted-overflow rectangle.
+    /// Compare Blink fraction child metrics, which add used margins before calculating
+    /// shifts. Core's ink-baseline clarification is discussed at:
+    /// <https://github.com/w3c/mathml-core/issues/78>.
+    /// Negative resolved margins remain signed. No margin collapsing is performed.
     pub fn with_padding_border_margin(mut self, pbm: &PaddingBorderMargin) -> Self {
         let margin = pbm.margin.auto_is(Au::zero);
         let padding_border = pbm.padding + pbm.border;
@@ -101,13 +137,25 @@ impl MathBoxMetrics {
 /// A completed layout, with measurements available without traversing fragments.
 /// Paint-only information remains on the ordinary BoxFragment's rare data.
 pub(crate) struct MathLayoutResult {
+    /// Accepted fragment subtree; only the caller decides its placement among siblings.
     pub fragments: Vec<Fragment>,
+    /// Measurements corresponding to the returned subtree, available without walking it.
     pub metrics: MathBoxMetrics,
 }
 
 impl MathLayoutResult {
     /// Finish a math content box. Child fragments and paint geometry are relative
     /// to its content origin; the returned measurements describe its margin box.
+    /// `metrics` describes undecorated content on entry. `children` and `paint_info`
+    /// use that content origin. This function inserts the content inset, stores a
+    /// content-relative fragment baseline, and returns outer measurements. Call it
+    /// once per styled box; inferred rows used inside mpadded bypass it.
+    ///
+    /// The contract follows Servo's existing physical/logical conversion support;
+    /// full orthogonal and reversed-writing-mode baseline handling is not implied.
+    /// [Blink's paint payload](https://github.com/chromium/chromium/blob/main/third_party/blink/renderer/core/layout/mathml/mathml_paint_info.h)
+    /// is a related separation: geometry for additional drawing accompanies a normal
+    /// CSS fragment rather than introducing a separately styled fraction-bar child.
     pub fn from_content(
         base: &LayoutBoxBase,
         containing_block: &ContainingBlock,

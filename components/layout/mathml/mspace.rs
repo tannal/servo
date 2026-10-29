@@ -1,3 +1,11 @@
+//! An explicit mathematical space has dimensions even though it has no glyph.
+//!
+//! See [Core mspace](https://w3c.github.io/mathml-core/#space-mspace).
+//! The TeX names height/depth describe distances on opposite sides of a baseline;
+//! CSS padding, borders, and margins are additional box geometry, not glyph metrics.
+//! The current attribute parsing and percentage bases below are implementation
+//! choices to audit against that section, not a full implementation of CSS sizing.
+
 use app_units::Au;
 use layout_api::{LayoutElement, LayoutNode};
 use malloc_size_of_derive::MallocSizeOf;
@@ -28,18 +36,26 @@ use crate::sizing::{ContentSizes, InlineContentSizesResult};
 use crate::style_ext::LayoutStyle;
 use crate::{ConstraintSpace, ContainingBlock};
 
+/// Explicit empty notation with declared dimensions and an alphabetic baseline.
+/// It has no glyph or operands, but its ordinary CSS box can still paint.
 #[derive(Debug, MallocSizeOf)]
 pub(crate) struct MathSpaceBlock {
+    /// Styled empty box, which can still paint a background or border.
     pub base: LayoutBoxBase,
     #[ignore_malloc_size_of = "LengthPercentage does not allocate on the heap"]
+    /// Computed inline extent attribute; unresolved percentage kept until layout.
     pub width: Option<LengthPercentage>,
     #[ignore_malloc_size_of = "LengthPercentage does not allocate on the heap"]
+    /// Requested extent above the alphabetic baseline.
     pub height: Option<LengthPercentage>,
     #[ignore_malloc_size_of = "LengthPercentage does not allocate on the heap"]
+    /// Requested extent below the alphabetic baseline.
     pub depth: Option<LengthPercentage>,
 }
 
 impl MathSpaceBlock {
+    /// Capture parsed dimensions under the current style. Even an empty element
+    /// produces a styled box; there are no mathematical operands to measure.
     pub(crate) fn construct(
         context: &LayoutContext,
         node_and_style_info: &NodeAndStyleInfo,
@@ -90,14 +106,17 @@ impl MathSpaceBlock {
         }
     }
 
+    /// Borrow the styled identity shared with normal fragment construction.
     pub(crate) fn base(&self) -> &LayoutBoxBase {
         &self.base
     }
 
+    /// Mutable styled-base access for existing tree lifecycle operations.
     pub(crate) fn base_mut(&mut self) -> &mut LayoutBoxBase {
         &mut self.base
     }
 
+    /// Recompute font-relative dimension attributes after a style repair.
     pub(crate) fn repair_style(
         &mut self,
         context: &SharedStyleContext,
@@ -139,8 +158,11 @@ impl MathSpaceBlock {
         self.height = parse_attr(local_name!("height"));
         self.depth = parse_attr(local_name!("depth"));
     }
+    /// No descendant ownership propagation is needed for this empty math box.
     pub(crate) fn attached_to_tree(&self, _layout_box: WeakLayoutBox) {}
 
+    /// Compute the current outer fixed-space contribution. Attribute percentage
+    /// resolution is deferred with a zero intrinsic basis; decorations are additional.
     pub(crate) fn inline_content_sizes(
         &self,
         _layout_context: &LayoutContext,
@@ -179,6 +201,9 @@ impl MathSpaceBlock {
         }
     }
 
+    /// Resolve the current width/height/depth representation, place the baseline
+    /// at height within the content box, and let the shared wrapper add CSS geometry.
+    /// The stretch argument is intentionally ignored: an explicit space is not a glyph.
     pub(crate) fn layout(
         &self,
         _layout_context: &LayoutContext,
