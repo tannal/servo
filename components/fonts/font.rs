@@ -104,6 +104,14 @@ pub(crate) const ZERO: Tag = Tag::new(b"zero");
 
 pub const LAST_RESORT_GLYPH_ADVANCE: FractionalPixel = 10.0;
 
+/// Dimensionless MATH scaling ratios. Zero or missing values use the style
+/// engine's Core fallback; unlike positional constants these are not Au values.
+#[derive(Clone, Copy, Debug)]
+pub struct MathFontScales {
+    pub script_percent_scale_down: Option<f32>,
+    pub script_script_percent_scale_down: Option<f32>,
+}
+
 pub struct MathConstants {
     pub axis_height: Au,
     pub rule_thickness: Au,
@@ -410,7 +418,16 @@ impl Font {
     }
 
     pub fn math_constants(&self, is_display: bool) -> Option<MathConstants> {
-        self.shaper.get_or_init(|| Shaper::new(self)).math_constants(is_display)
+        self.shaper
+            .get_or_init(|| Shaper::new(self))
+            .math_constants(is_display)
+    }
+
+    /// Query the inherited font's script scales for CSS `font-size: math`.
+    pub fn math_font_scales(&self) -> Option<MathFontScales> {
+        self.shaper
+            .get_or_init(|| Shaper::new(self))
+            .math_font_scales()
     }
 
     /// A unique identifier for the font, allowing comparison.

@@ -105,19 +105,16 @@ impl MathRowBlock {
         }
     }
 
-    /// Forward the current repair request to the existing child boxes. This is
-    /// existing lifecycle behavior; it is not a replacement for independently computed
-    /// child styles or reconstruction when participation changes.
+    /// Repair only this node. DOM layout-data repair visits each child's own
+    /// box with its computed style; propagating this style into descendants
+    /// would erase math-depth and the resulting font-size differences.
     pub(crate) fn repair_style(
         &mut self,
-        context: &SharedStyleContext,
-        node: &ServoLayoutNode,
+        _context: &SharedStyleContext,
+        _node: &ServoLayoutNode,
         new_style: &ServoArc<ComputedValues>,
     ) {
         self.base.repair_style(new_style);
-        for child in &self.children {
-            child.borrow_mut().repair_style(context, node, new_style);
-        }
     }
     /// Propagate layout-box ownership to descendants without measuring them.
     pub(crate) fn attached_to_tree(&self, layout_box: WeakLayoutBox) {

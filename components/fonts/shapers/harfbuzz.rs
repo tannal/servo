@@ -27,23 +27,20 @@ use harfbuzz_sys::{
     hb_position_t, hb_script_from_iso15924_tag, hb_shape, hb_tag_t, hb_variation_t,
 };
 use harfbuzz_sys::{
-    hb_ot_math_has_data, hb_ot_math_get_constant,
-    HB_OT_MATH_CONSTANT_AXIS_HEIGHT,
-    HB_OT_MATH_CONSTANT_FRACTION_RULE_THICKNESS,
-    HB_OT_MATH_CONSTANT_FRACTION_NUMERATOR_SHIFT_UP,
-    HB_OT_MATH_CONSTANT_FRACTION_NUMERATOR_DISPLAY_STYLE_SHIFT_UP,
-    HB_OT_MATH_CONSTANT_FRACTION_DENOMINATOR_SHIFT_DOWN,
+    HB_OT_MATH_CONSTANT_AXIS_HEIGHT, HB_OT_MATH_CONSTANT_FRACTION_DENOM_DISPLAY_STYLE_GAP_MIN,
     HB_OT_MATH_CONSTANT_FRACTION_DENOMINATOR_DISPLAY_STYLE_SHIFT_DOWN,
-    HB_OT_MATH_CONSTANT_FRACTION_NUMERATOR_GAP_MIN,
-    HB_OT_MATH_CONSTANT_FRACTION_NUM_DISPLAY_STYLE_GAP_MIN,
     HB_OT_MATH_CONSTANT_FRACTION_DENOMINATOR_GAP_MIN,
-    HB_OT_MATH_CONSTANT_FRACTION_DENOM_DISPLAY_STYLE_GAP_MIN,
-    HB_OT_MATH_CONSTANT_STACK_TOP_SHIFT_UP,
-    HB_OT_MATH_CONSTANT_STACK_TOP_DISPLAY_STYLE_SHIFT_UP,
-    HB_OT_MATH_CONSTANT_STACK_BOTTOM_SHIFT_DOWN,
+    HB_OT_MATH_CONSTANT_FRACTION_DENOMINATOR_SHIFT_DOWN,
+    HB_OT_MATH_CONSTANT_FRACTION_NUM_DISPLAY_STYLE_GAP_MIN,
+    HB_OT_MATH_CONSTANT_FRACTION_NUMERATOR_DISPLAY_STYLE_SHIFT_UP,
+    HB_OT_MATH_CONSTANT_FRACTION_NUMERATOR_GAP_MIN,
+    HB_OT_MATH_CONSTANT_FRACTION_NUMERATOR_SHIFT_UP, HB_OT_MATH_CONSTANT_FRACTION_RULE_THICKNESS,
+    HB_OT_MATH_CONSTANT_SCRIPT_PERCENT_SCALE_DOWN,
+    HB_OT_MATH_CONSTANT_SCRIPT_SCRIPT_PERCENT_SCALE_DOWN,
     HB_OT_MATH_CONSTANT_STACK_BOTTOM_DISPLAY_STYLE_SHIFT_DOWN,
-    HB_OT_MATH_CONSTANT_STACK_GAP_MIN,
-    HB_OT_MATH_CONSTANT_STACK_DISPLAY_STYLE_GAP_MIN,
+    HB_OT_MATH_CONSTANT_STACK_BOTTOM_SHIFT_DOWN, HB_OT_MATH_CONSTANT_STACK_DISPLAY_STYLE_GAP_MIN,
+    HB_OT_MATH_CONSTANT_STACK_GAP_MIN, HB_OT_MATH_CONSTANT_STACK_TOP_DISPLAY_STYLE_SHIFT_UP,
+    HB_OT_MATH_CONSTANT_STACK_TOP_SHIFT_UP, hb_ot_math_get_constant, hb_ot_math_has_data,
 };
 
 use num_traits::Zero;
@@ -52,7 +49,8 @@ use read_fonts::types::Tag;
 use super::{GlyphShapingResult, ShapedGlyph, unicode_script_to_iso15924_tag};
 use crate::platform::font::FontTable;
 use crate::{
-    BASE, Font, FontBaseline, FontTableMethods, GlyphId, MathConstants, ShapedText, ShapingFlags, ShapingOptions, fixed_to_float, float_to_fixed,
+    BASE, Font, FontBaseline, FontTableMethods, GlyphId, MathConstants, MathFontScales, ShapedText,
+    ShapingFlags, ShapingOptions, fixed_to_float, float_to_fixed,
 };
 
 const HB_OT_TAG_DEFAULT_SCRIPT: hb_tag_t = u32::from_be_bytes(Tag::new(b"DFLT").to_be_bytes());
@@ -264,6 +262,28 @@ impl Shaper {
                 hb_font,
                 font,
             }
+        }
+    }
+
+    /// HarfBuzz returns these two percentage constants unscaled. Do not use
+    /// fixed_to_float or the font's pixel size: 80 means a scale factor of 0.8.
+    pub(crate) fn math_font_scales(&self) -> Option<MathFontScales> {
+        unsafe {
+            if hb_ot_math_has_data(self.hb_face) == 0 {
+                return None;
+            }
+            let percentage = |constant| {
+                let value = hb_ot_math_get_constant(self.hb_font, constant);
+                (value > 0).then_some(value as f32 / 100.0)
+            };
+            Some(MathFontScales {
+                script_percent_scale_down: percentage(
+                    HB_OT_MATH_CONSTANT_SCRIPT_PERCENT_SCALE_DOWN,
+                ),
+                script_script_percent_scale_down: percentage(
+                    HB_OT_MATH_CONSTANT_SCRIPT_SCRIPT_PERCENT_SCALE_DOWN,
+                ),
+            })
         }
     }
 

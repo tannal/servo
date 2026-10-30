@@ -307,6 +307,7 @@ impl MathContainer {
         new_style: &ServoArc<ComputedValues>,
     ) {
         self.base.repair_style(new_style);
+        self.style = new_style.clone();
         self.root_box
             .borrow_mut()
             .repair_style(context, node, new_style);
