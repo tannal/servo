@@ -284,9 +284,7 @@ where
 
 #[cfg(test)]
 mod single_process_callback_test {
-    use crate::generic_channel::lazy_callback::{
-        LazyCallbackVariants, lazy_callback_inprocess, lazy_callback_ipc,
-    };
+    use crate::generic_channel::lazy_callback::{lazy_callback_inprocess, lazy_callback_ipc};
     use crate::generic_channel::{CallbackSetter, LazyCallback, SendError};
     fn test_lazy_callback(callback: LazyCallback<bool>, callback_setter: CallbackSetter<bool>) {
         let t1 = std::thread::spawn(move || {
@@ -308,15 +306,10 @@ mod single_process_callback_test {
 
     #[test]
     fn lazy_callback_already_taken_receiver_returns_disconnected() {
-        let (callback, _callback_setter) = lazy_callback_inprocess::<bool>();
-        let LazyCallback(LazyCallbackVariants::InProcess {
-            callback_receiver, ..
-        }) = &callback
-        else {
-            unreachable!();
-        };
-        callback_receiver.borrow_mut().take();
+        let (callback, callback_setter) = lazy_callback_inprocess::<bool>();
+        drop(callback_setter);
 
+        assert!(matches!(callback.send(true), Err(SendError::Disconnected)));
         assert!(matches!(callback.send(true), Err(SendError::Disconnected)));
     }
 
