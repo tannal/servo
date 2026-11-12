@@ -19,6 +19,7 @@ import tempfile
 import textwrap
 import threading
 import time
+import unittest
 from argparse import ArgumentParser
 from contextlib import chdir
 from pathlib import Path
@@ -162,6 +163,50 @@ class MachCommands(CommandBase):
         if submit:
             cmd += ["--submit"]
         return call(cmd, env=env, cwd=path.join("etc", "ci", "performance"))
+
+    @Command("test-fuzzing", description="Replay an external fuzzing corpus without generators", category="testing")
+    @CommandArgument("--runner", default=None, help="Use a local runner checkout instead of the managed pinned runner")
+    @CommandArgument("--testcases", default=None, help="Local HTML testcase file or directory")
+    @CommandArgument(
+        "--bundle", default=None, help="Local archive or bundle URL (runner selects its default if omitted)"
+    )
+    @CommandArgument("--force-download", action="store_true", help="Ask the runner to refresh its cached bundle")
+    @CommandArgument("--signatures", default=None, help="Crash expectations (runner discovers its default if omitted)")
+    @CommandArgument("--output", default=None, help="Artifact directory (default: target/fuzzing)")
+    @CommandArgument("--timeout", type=float, default=None, help="Override runner timeout per testcase in seconds")
+    @CommandArgument("--jobs", "-j", type=int, default=None, help="Parallel replay workers")
+    @CommandBase.allow_target_configuration
+    @CommandBase.common_command_arguments(binary_selection=True)
+    def test_fuzzing(
+        self,
+        servo_binary: Optional[str],
+        runner: Optional[str],
+        testcases: Optional[str],
+        bundle: Optional[str],
+        force_download: bool,
+        signatures: Optional[str],
+        output: Optional[str],
+        timeout: Optional[float],
+        jobs: Optional[int],
+        **kwargs: Any,
+    ) -> int:
+        if self.target.is_cross_build() or servo_binary is None:
+            print("test-fuzzing requires a runnable desktop Servo binary")
+            return 2
+        from servo.fuzzing import replay
+
+        return replay(
+            servo_binary,
+            runner,
+            testcases,
+            signatures,
+            output or str(Path(PROJECT_TOPLEVEL_PATH) / "target" / "fuzzing"),
+            timeout,
+            jobs,
+            self.build_env(),
+            bundle=bundle,
+            force_download=force_download,
+        )
 
     @Command("test-unit", description="Run unit tests", category="testing")
     @CommandArgument("--package", "-p", default=None, help="Specific package to test")
@@ -378,6 +423,12 @@ class MachCommands(CommandBase):
 
         print("Running try_parser tests...")
         passed = try_parser.run_tests() and passed
+
+        print("Running fuzzing adapter tests...")
+        from servo import test_fuzzing
+
+        suite = unittest.defaultTestLoader.loadTestsFromModule(test_fuzzing)
+        passed = unittest.TextTestRunner().run(suite).wasSuccessful() and passed
 
         print("Running WPT tests...")
         passed = wpt.run_tests() and passed
