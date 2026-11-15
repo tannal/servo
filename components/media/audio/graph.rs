@@ -193,6 +193,12 @@ impl AudioGraph {
         }
     }
 
+    /// Drop all nodes and edges in the graph, releasing any external callbacks held by nodes.
+    pub(crate) fn clear(&mut self) {
+        self.graph.clear();
+        self.dests.clear();
+    }
+
     /// Create a node, obtain its id
     pub(crate) fn add_node(&mut self, node: Box<dyn AudioNodeEngine>) -> NodeId {
         NodeId(self.graph.add_node(Node::new(node)))

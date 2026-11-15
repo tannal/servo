@@ -22,10 +22,13 @@ macro_rules! make_message_handler(
 macro_rules! make_state_change(
     ($fn_name:ident, $state:ident, $render_msg:ident) => (
         pub fn $fn_name(&self) -> StateChangeResult {
+            if self.state.get() == ProcessingState::Closed {
+                return None;
+            }
             self.state.set(ProcessingState::$state);
             let (tx, rx) = mpsc::channel();
             let _ = self.sender.send(AudioRenderThreadMsg::$render_msg(tx));
-            rx.recv().unwrap()
+            rx.recv().unwrap_or(None)
         }
     );
 );

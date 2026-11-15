@@ -209,9 +209,12 @@ impl AudioContext {
     }
 
     pub fn current_time(&self) -> f64 {
+        if self.state.get() == ProcessingState::Closed {
+            return 0.;
+        }
         let (tx, rx) = mpsc::channel();
         let _ = self.sender.send(AudioRenderThreadMsg::GetCurrentTime(tx));
-        rx.recv().unwrap()
+        rx.recv().unwrap_or(0.)
     }
 
     pub fn create_node(&self, node_type: AudioNodeInit, ch: ChannelInfo) -> Option<NodeId> {

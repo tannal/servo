@@ -1,0 +1,54 @@
+<!DOCTYPE html>
+<title>Document objects for added and removed iframes that use WebAudio are collected</title>
+<script src="/resources/testharness.js"></script>
+<script src="/resources/testharnessreport.js"></script>
+<script src="resources/leak-helpers.js"></script>
+<body>
+    <script>
+      const tests = [
+        [
+          "started OscillatorNode",
+          `<script>
+            const ctx = new AudioContext();
+            const osc = ctx.createOscillator();
+            osc.connect(ctx.destination);
+            osc.start();
+          <\/script>`,
+        ],
+        [
+          "AnalyserNode",
+          `<script>
+            const ctx = new AudioContext();
+            ctx.createAnalyser();
+          <\/script>`,
+        ],
+        [
+          "OfflineAudioContext with OscillatorNode and AnalyserNode",
+          `<script>
+            const ctx = new OfflineAudioContext(1, 44100, 44100);
+            const osc = ctx.createOscillator();
+            const analyser = ctx.createAnalyser();
+            osc.connect(analyser);
+            analyser.connect(ctx.destination);
+            osc.start();
+          <\/script>`,
+        ],
+        [
+          "OfflineAudioContext with startRendering",
+          `<script>
+            const ctx = new OfflineAudioContext(1, 44100 * 10, 44100);
+            const osc = ctx.createOscillator();
+            osc.connect(ctx.destination);
+            osc.start();
+            ctx.startRendering();
+          <\/script>`,
+        ],
+      ];
+
+      for (const [name, test] of tests) {
+        promise_test(async () => {
+          assert_true(await createAndDestroyIframeWithHTML(test));
+        }, `'${name}' does not leak the document`);
+      }
+    </script>
+</body>

@@ -42,6 +42,7 @@ use crate::dom::csp::{GlobalCspReporting, Violation};
 use crate::dom::event::Event;
 use crate::dom::eventtarget::EventTarget;
 use crate::dom::globalscope::GlobalScope;
+use crate::dom::globalscope::lifecycle::LifecycleObserver;
 use crate::dom::messageevent::MessageEvent;
 use crate::dom::performance::performanceresourcetiming::InitiatorType;
 use crate::event_loop::timers::OneshotTimerCallback;
@@ -517,6 +518,14 @@ impl ResourceTimingListener for EventSourceContext {
     }
 }
 
+impl LifecycleObserver for EventSource {
+    fn on_tear_down(&self) {
+        if self.ready_state.get() != ReadyState::Closed {
+            self.cancel();
+        }
+    }
+}
+
 impl EventSource {
     fn new_inherited(url: ServoUrl, with_credentials: bool) -> EventSource {
         EventSource {
@@ -604,7 +613,6 @@ impl EventSourceMethods<crate::DomTypeHolder> for EventSource {
             url_record.clone(),
             event_source_init.withCredentials,
         );
-        global.track_event_source(&event_source);
         let cors_attribute_state = if event_source_init.withCredentials {
             // Step 7 If the value of eventSourceInitDict's withCredentials member is true,
             // then set corsAttributeState to Use Credentials and set ev's withCredentials
@@ -663,6 +671,7 @@ impl EventSourceMethods<crate::DomTypeHolder> for EventSource {
 
         let task_source = global.task_manager().networking_task_source().into();
         global.fetch(request, context, task_source);
+        global.track_lifecycle_observer(&*event_source);
 
         // Step 16 Return ev.
         Ok(event_source)

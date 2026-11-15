@@ -102,7 +102,7 @@ use crate::dom::bindings::settings_stack::{entry_global, incumbent_global};
 use crate::dom::bindings::str::DOMString;
 use crate::dom::bindings::structuredclone;
 use crate::dom::bindings::trace::{CustomTraceable, HashMapTracedValues};
-use crate::dom::bindings::weakref::{DOMTracker, WeakRef};
+use crate::dom::bindings::weakref::{WeakRef, WeakReferenceable};
 use crate::dom::blob::Blob;
 use crate::dom::dedicatedworkerglobalscope::{
     DedicatedWorkerControlMsg, DedicatedWorkerGlobalScope,
@@ -115,6 +115,7 @@ use crate::dom::eventtarget::EventTarget;
 use crate::dom::file::File;
 use crate::dom::globalscope::auto_close_worker::AutoCloseWorker;
 use crate::dom::globalscope::broadcastchannel::BroadcastChannel;
+use crate::dom::globalscope::lifecycle::{LifecycleObserver, LifecycleRegistry};
 use crate::dom::globalscope::listeners::{
     BlobInfo, BlobResult, BlobTracker, BroadcastChannelState, BroadcastListener, FileListener,
     FileListenerCallback, FileListenerState, FileListenerTarget, ManagedMessagePort,
@@ -250,8 +251,8 @@ pub(crate) struct GlobalScope {
     /// Vector storing closing references of all workers
     list_auto_close_worker: DomRefCell<Vec<AutoCloseWorker>>,
 
-    /// Vector storing references of all eventsources.
-    event_source_tracker: DOMTracker<EventSource>,
+    /// Registry of active lifecycle observers notified when this global scope tears down.
+    lifecycle_registry: LifecycleRegistry,
 
     /// Dependent AbortSignals that must be kept alive per
     /// <https://dom.spec.whatwg.org/#abort-signal-garbage-collection?
@@ -340,15 +341,10 @@ pub(crate) struct GlobalScope {
 }
 
 impl GlobalScope {
-    /// Terminate any ongoing fetches, close event source, and clear loaded script modules.
+    /// Terminate any ongoing fetches, notify lifecycle observers, and clear loaded script modules.
     pub(crate) fn tear_down(&self) {
         self.fetch_group_mut().terminate(self);
-        self.close_event_sources();
-        if let Some(window) = self.downcast::<Window>() &&
-            let Some(cookie_store) = window.cookie_store()
-        {
-            cookie_store.clean_up();
-        }
+        self.lifecycle_registry.tear_down();
         self.with_module_map(|module_map| std::mem::take(&mut *module_map.borrow_mut()));
     }
 
@@ -434,7 +430,7 @@ impl GlobalScope {
             top_level_creation_url: DomRefCell::new(top_level_creation_url),
             permission_state_invocation_results: Default::default(),
             list_auto_close_worker: Default::default(),
-            event_source_tracker: DOMTracker::new(),
+            lifecycle_registry: LifecycleRegistry::new(),
             abort_signal_dependents: Default::default(),
             uncaught_rejections: Default::default(),
             consumed_rejections: Default::default(),
@@ -2001,22 +1997,23 @@ impl GlobalScope {
         }
     }
 
-    pub(crate) fn track_event_source(&self, event_source: &EventSource) {
-        self.event_source_tracker.track(event_source);
+    pub(crate) fn track_lifecycle_observer<T>(&self, observer: &T)
+    where
+        T: WeakReferenceable + LifecycleObserver + 'static,
+    {
+        self.lifecycle_registry.register(observer);
     }
 
     pub(crate) fn close_event_sources(&self) -> bool {
         let mut canceled_any_fetch = false;
-        self.event_source_tracker
-            .for_each(
-                |event_source: DomRoot<EventSource>| match event_source.ReadyState() {
-                    2 => {},
-                    _ => {
-                        event_source.cancel();
-                        canceled_any_fetch = true;
-                    },
+        self.lifecycle_registry
+            .for_each::<EventSource, _>(|event_source| match event_source.ReadyState() {
+                2 => {},
+                _ => {
+                    event_source.cancel();
+                    canceled_any_fetch = true;
                 },
-            );
+            });
         canceled_any_fetch
     }
 

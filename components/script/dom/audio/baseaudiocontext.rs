@@ -293,6 +293,16 @@ impl BaseAudioContext {
     pub(crate) fn channel_count(&self) -> u32 {
         self.channel_count
     }
+
+    pub(crate) fn tear_down(&self) {
+        if self.control_thread_state() != ProcessingState::Closed {
+            self.audio_context_impl.lock().unwrap().close();
+        }
+        self.state.set(AudioContextState::Closed);
+        self.pending_resume_promises.borrow_mut().clear();
+        self.in_flight_resume_promises_queue.borrow_mut().clear();
+        self.decode_resolvers.borrow_mut().clear();
+    }
 }
 
 impl BaseAudioContextMethods<crate::DomTypeHolder> for BaseAudioContext {
@@ -668,8 +678,10 @@ impl BaseAudioContextMethods<crate::DomTypeHolder> for BaseAudioContext {
                         rooted!(&in(cx) let resolver = this
                             .decode_resolvers
                             .safe_borrow_mut(cx.no_gc())
-                            .remove(&uuid_)
-                            .expect("resolver should exist"));
+                            .remove(&uuid_));
+                        let Some(ref resolver) = *resolver else {
+                            return;
+                        };
                         let promise = resolver.promise.root(cx);
 
                         if let Some(callback) = &resolver.success_callback {
@@ -684,8 +696,10 @@ impl BaseAudioContextMethods<crate::DomTypeHolder> for BaseAudioContext {
                         rooted!(&in(cx) let resolver = this
                             .decode_resolvers
                             .safe_borrow_mut(cx.no_gc())
-                            .remove(&uuid)
-                            .expect("resolver should exist"));
+                            .remove(&uuid));
+                        let Some(ref resolver) = *resolver else {
+                            return;
+                        };
                         let promise = resolver.promise.root(cx);
 
                         if let Some(callback) = &resolver.error_callback {
@@ -729,8 +743,10 @@ impl BaseAudioContextMethods<crate::DomTypeHolder> for BaseAudioContext {
                     rooted!(&in(cx) let resolver = this
                         .decode_resolvers
                         .safe_borrow_mut(cx.no_gc())
-                        .remove(&uuid)
-                        .expect("resolver should exist"));
+                        .remove(&uuid));
+                    let Some(ref resolver) = *resolver else {
+                        return;
+                    };
 
                     if let Some(callback) = &resolver.error_callback {
                         let _ = callback.Call__(

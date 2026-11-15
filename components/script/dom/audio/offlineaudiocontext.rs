@@ -3,6 +3,7 @@
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
 use std::cell::Cell;
+use std::rc::Rc;
 use std::sync::{Mutex, mpsc};
 use std::thread::Builder;
 
@@ -11,7 +12,7 @@ use js::context::JSContext;
 use js::realm::CurrentRealm;
 use js::rust::HandleObject;
 use script_bindings::cell::DomRefCell;
-use script_bindings::reflector::reflect_dom_object_with_proto;
+use script_bindings::reflector::reflect_weak_referenceable_dom_object_with_proto;
 use servo_base::id::PipelineId;
 use servo_media::audio::context::OfflineAudioContextOptions as ServoMediaOfflineAudioContextOptions;
 
@@ -30,6 +31,7 @@ use crate::dom::bindings::refcounted::Trusted;
 use crate::dom::bindings::reflector::DomGlobal;
 use crate::dom::bindings::root::DomRoot;
 use crate::dom::event::{Event, EventBubbles, EventCancelable};
+use crate::dom::globalscope::lifecycle::LifecycleObserver;
 use crate::dom::promise::{Promise, RootedPromise, TracedPromise};
 use crate::dom::window::Window;
 
@@ -89,12 +91,17 @@ impl OfflineAudioContext {
         let pipeline_id = window.pipeline_id();
         let context =
             OfflineAudioContext::new_inherited(channel_count, length, sample_rate, pipeline_id)?;
-        Ok(reflect_dom_object_with_proto(
-            cx,
-            Box::new(context),
-            window,
-            proto,
-        ))
+        let context =
+            reflect_weak_referenceable_dom_object_with_proto(cx, Rc::new(context), window, proto);
+        window.as_global_scope().track_lifecycle_observer(&*context);
+        Ok(context)
+    }
+}
+
+impl LifecycleObserver for OfflineAudioContext {
+    fn on_tear_down(&self) {
+        self.context.tear_down();
+        self.pending_rendering_promise.borrow_mut().take();
     }
 }
 
@@ -180,6 +187,13 @@ impl OfflineAudioContextMethods<crate::DomTypeHolder> for OfflineAudioContext {
                 let processed_audio = receiver.recv().unwrap_or_default();
                 task_source.queue(task!(resolve: move |cx| {
                     let this = this.root();
+                    let Some(promise) =
+                        (*this.pending_rendering_promise.safe_borrow_mut(cx.no_gc()))
+                            .take()
+                            .map(|promise| promise.root(cx))
+                    else {
+                        return;
+                    };
                     let mut processed_audio = processed_audio;
                     // it can end up being empty if the task failed
                     processed_audio.resize_with(this.channel_count as usize, || {
@@ -192,14 +206,6 @@ impl OfflineAudioContextMethods<crate::DomTypeHolder> for OfflineAudioContext {
                         *this.context.SampleRate(),
                         processed_audio,
                     );
-                    let promise = {
-                        (*this
-                            .pending_rendering_promise
-                            .safe_borrow_mut(cx.no_gc()))
-                            .take()
-                            .unwrap()
-                            .root(cx)
-                    };
                     promise.resolve_native(cx, &buffer);
                     let global = &this.global();
                     let window = global.as_window();

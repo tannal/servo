@@ -4,6 +4,7 @@
 
 use std::cell::Cell;
 use std::collections::VecDeque;
+use std::rc::Rc;
 
 use cookie::{Cookie, SameSite};
 use dom_struct::dom_struct;
@@ -17,7 +18,7 @@ use net_traits::{
 };
 use script_bindings::cell::DomRefCell;
 use script_bindings::codegen::GenericBindings::CookieStoreBinding::CookieSameSite;
-use script_bindings::reflector::reflect_dom_object;
+use script_bindings::reflector::reflect_weak_referenceable_dom_object;
 use servo_base::generic_channel::{GenericCallback, GenericSend, GenericSender};
 use servo_base::id::CookieStoreId;
 use servo_url::ServoUrl;
@@ -39,6 +40,7 @@ use crate::dom::document::get_registrable_domain_suffix_of_or_is_equal_to;
 use crate::dom::event::Event;
 use crate::dom::eventtarget::EventTarget;
 use crate::dom::globalscope::GlobalScope;
+use crate::dom::globalscope::lifecycle::LifecycleObserver;
 use crate::dom::promise::Promise;
 use crate::dom::window::Window;
 use crate::dom::{RootedPromise, TracedPromise};
@@ -145,6 +147,12 @@ impl CookieListener {
     }
 }
 
+impl LifecycleObserver for CookieStore {
+    fn on_tear_down(&self) {
+        self.clean_up();
+    }
+}
+
 impl CookieStore {
     fn new_inherited(unregister_channel: GenericSender<CoreResourceMsg>) -> CookieStore {
         CookieStore {
@@ -159,14 +167,15 @@ impl CookieStore {
     }
 
     pub(crate) fn new(cx: &mut JSContext, global: &GlobalScope) -> DomRoot<CookieStore> {
-        let store = reflect_dom_object(
+        let store = reflect_weak_referenceable_dom_object(
             cx,
-            Box::new(CookieStore::new_inherited(
+            Rc::new(CookieStore::new_inherited(
                 global.resource_threads().core_thread.clone(),
             )),
             global,
         );
         store.setup_route();
+        global.track_lifecycle_observer(&*store);
         store
     }
 

@@ -303,6 +303,7 @@ impl AudioRenderThread {
                     let _ = tx.send(context.suspend());
                 },
                 AudioRenderThreadMsg::Close(tx) => {
+                    context.graph.clear();
                     let _ = tx.send(context.suspend());
                     break_loop = true;
                 },
