@@ -25,6 +25,14 @@ on:
       wpt:
         required: false
         type: boolean
+      fuzzing:
+        required: false
+        default: false
+        type: boolean
+      fuzzing-args:
+        default: ""
+        required: false
+        type: string
       number-of-wpt-chunks:
         default: 20
         required: false
@@ -76,6 +84,14 @@ on:
       wpt:
         required: false
         type: boolean
+      fuzzing:
+        required: false
+        default: false
+        type: boolean
+      fuzzing-args:
+        default: ""
+        required: false
+        type: string
       number-of-wpt-chunks:
         default: 20
         required: false
@@ -147,6 +163,18 @@ jobs:
       wpt-sync-from-upstream: ${{ inputs.wpt-sync-from-upstream }}
       number-of-wpt-chunks: ${{ inputs.number-of-wpt-chunks }}
       binary-path: servo/servoshell
+    secrets: inherit
+
+  fuzzing:
+    if: ${{ inputs.fuzzing }}
+    name: Linux Fuzzing
+    needs: ["common"]
+    uses: ./.github/workflows/linux-fuzzing.yml
+    with:
+      fuzzing-args: ${{ inputs.fuzzing-args }}
+      profile: ${{ inputs.profile }}
+      binary-path: servo/servoshell
+      force-github-hosted-runner: ${{ inputs.force-github-hosted-runner }}
     secrets: inherit
 
   bencher:

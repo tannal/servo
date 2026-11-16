@@ -19,6 +19,7 @@ import tempfile
 import textwrap
 import threading
 import time
+import unittest
 from argparse import ArgumentParser
 from contextlib import chdir
 from pathlib import Path
@@ -36,6 +37,7 @@ from mach.decorators import (
 )
 
 import servo.devtools_tests
+import servo.fuzzing
 import servo.try_parser
 from servo.command_base import BuildType, CommandBase, call, check_call
 from servo.platform.build_target import AndroidTarget, is_android, is_openharmony
@@ -162,6 +164,46 @@ class MachCommands(CommandBase):
         if submit:
             cmd += ["--submit"]
         return call(cmd, env=env, cwd=path.join("etc", "ci", "performance"))
+
+    @Command("test-fuzzing", description="Run the fuzzing replay suite", category="testing")
+    @CommandArgument("--runner", default=None, help="Path to a local servo-fuzzing checkout")
+    @CommandArgument("--testcases", default=None, help="Path to a testcase file or directory")
+    @CommandArgument("--bundle", default=None, help="Path or URL to a corpus archive (or Actions run URL)")
+    @CommandArgument("--force-download", default=False, action="store_true", help="Refresh cached bundle downloads")
+    @CommandArgument("--signatures", default=None, help="Path to a signatures JSON file")
+    @CommandArgument("--output", default=path.join("target", "fuzzing"), help="Directory for replay output")
+    @CommandArgument("--timeout", default=None, type=float, help="Per-testcase timeout in seconds")
+    @CommandArgument("--jobs", default=None, type=int, help="Number of parallel worker processes")
+    @CommandBase.allow_target_configuration
+    @CommandBase.common_command_arguments(binary_selection=True)
+    def test_fuzzing(
+        self,
+        servo_binary: Optional[str] = None,
+        runner: str | None = None,
+        testcases: str | None = None,
+        bundle: str | None = None,
+        force_download: bool = False,
+        signatures: str | None = None,
+        output: str = path.join("target", "fuzzing"),
+        timeout: float | None = None,
+        jobs: int | None = None,
+        **kwargs: Any,
+    ) -> int:
+        if self.target.is_cross_build() or servo_binary is None:
+            print("test-fuzzing doesn't support cross build targets.")
+            return 1
+        return servo.fuzzing.replay(
+            servo_binary,
+            runner,
+            testcases,
+            signatures,
+            output,
+            timeout,
+            jobs,
+            self.build_env(),
+            bundle=bundle,
+            force_download=force_download,
+        )
 
     @Command("test-unit", description="Run unit tests", category="testing")
     @CommandArgument("--package", "-p", default=None, help="Specific package to test")
@@ -378,6 +420,13 @@ class MachCommands(CommandBase):
 
         print("Running try_parser tests...")
         passed = try_parser.run_tests() and passed
+
+        import python.servo.test_fuzzing as test_fuzzing
+
+        print("Running fuzzing tests...")
+        verbosity = 1 if logging.getLogger().level >= logging.WARN else 2
+        suite = unittest.TestLoader().loadTestsFromModule(test_fuzzing)
+        passed = unittest.TextTestRunner(verbosity=verbosity).run(suite).wasSuccessful() and passed
 
         print("Running WPT tests...")
         passed = wpt.run_tests() and passed
@@ -1016,6 +1065,7 @@ class MachCommands(CommandBase):
             unit-tests          Run unit tests
             build-libservo      Build libservo library
             wpt                 Run web-platform-tests
+            fuzzing             Run fuzzing replay suite
             bencher             Run benchmarking
             coverage            Run code coverage
             capi                Run C API build
@@ -1039,6 +1089,7 @@ class MachCommands(CommandBase):
           Examples:
             ./mach try full
             ./mach try coverage
+            ./mach try fuzzing
             ./mach try linux-bencher-capi-production
             ./mach try webgpu
         """,

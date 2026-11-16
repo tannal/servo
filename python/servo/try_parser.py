@@ -37,6 +37,7 @@ class JobConfig(object):
     name: str
     workflow: Workflow = Workflow.LINUX
     wpt: bool = False
+    fuzzing: bool = False
     profile: str = "checked-release"
     unit_tests: bool = False
     devtools_tests: bool = False
@@ -46,10 +47,11 @@ class JobConfig(object):
     capi: bool = False
     build_args: str = ""
     wpt_args: str = ""
+    fuzzing_args: str = ""
     number_of_wpt_chunks: int = 20
     # These are the fields that must match in between two JobConfigs for them to be able to be
     # merged. If you modify any of the fields above, make sure to update this line as well.
-    merge_compatibility_fields: ClassVar[list[str]] = ["workflow", "profile", "wpt_args", "build_args"]
+    merge_compatibility_fields: ClassVar[list[str]] = ["workflow", "profile", "wpt_args", "build_args", "fuzzing_args"]
 
     def merge(self, other: JobConfig) -> bool:
         """Try to merge another job with this job. Returns True if merging is successful
@@ -59,6 +61,7 @@ class JobConfig(object):
                 return False
 
         self.wpt |= other.wpt
+        self.fuzzing |= other.fuzzing
         self.unit_tests |= other.unit_tests
         self.devtools_tests |= other.devtools_tests
         self.build_libservo |= other.build_libservo
@@ -99,6 +102,8 @@ class JobConfig(object):
             modifier.append("Build libservo")
         if self.wpt:
             modifier.append("WPT")
+        if self.fuzzing:
+            modifier.append("Fuzzing")
         if self.bencher:
             modifier.append("Bencher")
         if self.coverage:
@@ -196,6 +201,8 @@ def handle_modifier(config: Optional[JobConfig], s: str) -> Optional[JobConfig]:
         config.capi = True
     elif "wpt" in s:
         config.wpt = True
+    if "fuzz" in s:
+        config.fuzzing = True
     config.update_name()
     return config
 
@@ -230,6 +237,9 @@ class Config(object):
                 continue  # skip over keyword
             if word == "wpt":
                 words.extend(["linux-wpt"])
+                continue  # skip over keyword
+            if word in ["fuzz", "fuzzing"]:
+                words.extend(["linux-fuzzing"])
                 continue  # skip over keyword
             if word == "full":
                 words.extend(["linux-unit-tests", "windows-unit-tests", "macos-arm-unit-tests"])
@@ -310,7 +320,9 @@ class TestParser(unittest.TestCase):
                         "build_libservo": False,
                         "workflow": "linux",
                         "wpt": False,
+                        "fuzzing": False,
                         "wpt_args": "",
+                        "fuzzing_args": "",
                         "build_args": "",
                         "coverage": False,
                     }
@@ -328,6 +340,7 @@ class TestParser(unittest.TestCase):
                         "name": "Linux (Unit Tests, Build libservo, WPT, Bencher, C API)",
                         "workflow": "linux",
                         "wpt": True,
+                        "fuzzing": False,
                         "profile": "checked-release",
                         "unit_tests": True,
                         "devtools_tests": False,
@@ -337,12 +350,14 @@ class TestParser(unittest.TestCase):
                         "capi": True,
                         "coverage": False,
                         "wpt_args": "",
+                        "fuzzing_args": "",
                         "number_of_wpt_chunks": 20,
                     },
                     {
                         "name": "Windows (Unit Tests, Build libservo, C API)",
                         "workflow": "windows",
                         "wpt": False,
+                        "fuzzing": False,
                         "profile": "checked-release",
                         "unit_tests": True,
                         "devtools_tests": False,
@@ -352,12 +367,14 @@ class TestParser(unittest.TestCase):
                         "capi": True,
                         "coverage": False,
                         "wpt_args": "",
+                        "fuzzing_args": "",
                         "number_of_wpt_chunks": 20,
                     },
                     {
                         "name": "macOS arm64 (Unit Tests)",
                         "workflow": "macos-arm64",
                         "wpt": False,
+                        "fuzzing": False,
                         "profile": "checked-release",
                         "unit_tests": True,
                         "devtools_tests": False,
@@ -367,12 +384,14 @@ class TestParser(unittest.TestCase):
                         "capi": False,
                         "coverage": False,
                         "wpt_args": "",
+                        "fuzzing_args": "",
                         "number_of_wpt_chunks": 20,
                     },
                     {
                         "name": "Android",
                         "workflow": "android",
                         "wpt": False,
+                        "fuzzing": False,
                         "profile": "checked-release",
                         "unit_tests": False,
                         "devtools_tests": False,
@@ -382,12 +401,14 @@ class TestParser(unittest.TestCase):
                         "capi": False,
                         "coverage": False,
                         "wpt_args": "",
+                        "fuzzing_args": "",
                         "number_of_wpt_chunks": 20,
                     },
                     {
                         "name": "OpenHarmony",
                         "workflow": "ohos",
                         "wpt": False,
+                        "fuzzing": False,
                         "profile": "checked-release",
                         "unit_tests": False,
                         "devtools_tests": False,
@@ -397,12 +418,14 @@ class TestParser(unittest.TestCase):
                         "capi": False,
                         "coverage": False,
                         "wpt_args": "",
+                        "fuzzing_args": "",
                         "number_of_wpt_chunks": 20,
                     },
                     {
                         "name": "Lint",
                         "workflow": "lint",
                         "wpt": False,
+                        "fuzzing": False,
                         "profile": "checked-release",
                         "unit_tests": False,
                         "devtools_tests": False,
@@ -412,6 +435,7 @@ class TestParser(unittest.TestCase):
                         "capi": False,
                         "coverage": False,
                         "wpt_args": "",
+                        "fuzzing_args": "",
                         "number_of_wpt_chunks": 20,
                     },
                 ],
@@ -435,7 +459,9 @@ class TestParser(unittest.TestCase):
                         "build_libservo": False,
                         "workflow": "linux",
                         "wpt": True,
+                        "fuzzing": False,
                         "wpt_args": "",
+                        "fuzzing_args": "",
                         "build_args": "",
                         "coverage": False,
                     }
@@ -497,7 +523,9 @@ class TestParser(unittest.TestCase):
                         "build_libservo": False,
                         "workflow": "linux",
                         "wpt": False,
+                        "fuzzing": False,
                         "wpt_args": "",
+                        "fuzzing_args": "",
                         "build_args": "",
                         "coverage": False,
                     }
@@ -507,6 +535,29 @@ class TestParser(unittest.TestCase):
 
     def test_wpt_alias(self) -> None:
         self.assertDictEqual(json.loads(Config("wpt").to_json()), json.loads(Config("linux-wpt").to_json()))
+
+    def test_fuzzing(self) -> None:
+        expected = json.loads(Config("linux-fuzzing").to_json())
+        self.assertDictEqual(json.loads(Config("fuzzing").to_json()), expected)
+        self.assertDictEqual(json.loads(Config("fuzz").to_json()), expected)
+
+        matrix_result = expected["matrix"][0]
+        self.assertEqual(matrix_result["name"], "Linux (Fuzzing)")
+        self.assertEqual(matrix_result["workflow"], "linux")
+        self.assertTrue(matrix_result["fuzzing"])
+        self.assertFalse(matrix_result["unit_tests"])
+        self.assertFalse(matrix_result["wpt"])
+
+        debug_result = json.loads(Config("linux-debug-fuzzing").to_json())["matrix"][0]
+        self.assertEqual(debug_result["name"], "Linux (Dev, Fuzzing)")
+        self.assertEqual(debug_result["profile"], "dev")
+        self.assertTrue(debug_result["fuzzing"])
+
+        merged_result = json.loads(Config("linux-unit-tests fuzzing").to_json())["matrix"]
+        self.assertEqual(len(merged_result), 1)
+        self.assertEqual(merged_result[0]["name"], "Linux (Unit Tests, Fuzzing)")
+        self.assertTrue(merged_result[0]["unit_tests"])
+        self.assertTrue(merged_result[0]["fuzzing"])
 
     def test_debugmozjs(self) -> None:
         matrix_result = json.loads(Config("linux-debugmozjs").to_json())["matrix"][0]

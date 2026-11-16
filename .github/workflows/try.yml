@@ -21,6 +21,13 @@ on:
       wpt:
         required: false
         type: boolean
+      fuzzing:
+        required: false
+        type: boolean
+      fuzzing-args:
+        default: ""
+        required: false
+        type: string
       unit-tests:
         required: false
         type: boolean
@@ -87,6 +94,8 @@ jobs:
               // WPT-related overrides only affect Linux currently, as tests don't run by default on other platforms.
               configuration.matrix[0].wpt = Boolean(${{ inputs.wpt }});
               configuration.matrix[0].wpt_args = "${{ inputs.wpt-args }}" || "";
+              configuration.matrix[0].fuzzing = Boolean(${{ inputs.fuzzing }});
+              configuration.matrix[0].fuzzing_args = "${{ inputs.fuzzing-args }}" || "";
               configuration.matrix[0].build_args = "${{ inputs.build-args }}" || "";
 
               let unit_tests = Boolean(${{ inputs.unit-tests }});
@@ -113,6 +122,8 @@ jobs:
     with:
       workflow: ${{ matrix.workflow }}
       wpt: ${{ matrix.wpt }}
+      fuzzing: ${{ matrix.fuzzing }}
+      fuzzing-args: ${{ matrix.fuzzing_args }}
       profile: ${{ matrix.profile }}
       unit-tests: ${{ matrix.unit_tests }}
       devtools-tests: ${{ matrix.devtools_tests }}

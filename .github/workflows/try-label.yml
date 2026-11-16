@@ -139,6 +139,8 @@ jobs:
     with:
       workflow: ${{ matrix.workflow }}
       wpt: ${{ matrix.wpt }}
+      fuzzing: ${{ matrix.fuzzing }}
+      fuzzing-args: ${{ matrix.fuzzing_args }}
       profile: ${{ matrix.profile }}
       unit-tests: ${{ matrix.unit_tests }}
       devtools-tests: ${{ matrix.devtools_tests }}
