@@ -21,7 +21,7 @@ import zipfile
 from pathlib import Path, PurePosixPath
 
 RUNNER_REPOSITORY = "https://github.com/tannal/servo-fuzzing.git"
-RUNNER_REVISION = "1d97cc95af2c4e750dba8dde74e1e5b270486153"
+RUNNER_REVISION = "437d30cd39295832bbd93498fc9f21d04978d141"
 
 
 def obtain_actions_bundle(url: str, output: Path, env: dict[str, str]) -> Path:
