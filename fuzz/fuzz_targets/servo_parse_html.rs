@@ -18,8 +18,7 @@ use servo::{
 use servo_default_resources as _;
 use url::Url;
 
-const MAX_INPUT_LEN: usize = 16 * 1024;
-const DEFAULT_LOAD_TIMEOUT_MS: u64 = 1000;
+const DEFAULT_LOAD_TIMEOUT_MS: u64 = 1500;
 const NORMAL_DRAIN_TIMEOUT: Duration = Duration::from_millis(20);
 const TIMEOUT_DRAIN_TIMEOUT: Duration = Duration::from_millis(80);
 const HISTORY_LEN: usize = 4;
@@ -169,6 +168,7 @@ pub struct ServoFuzzerHelper {
     woken: Arc<AtomicBool>,
     enable_paint: bool,
     load_timeout: Duration,
+    max_input_len: Option<usize>,
 }
 
 impl ServoFuzzerHelper {
@@ -203,6 +203,11 @@ impl ServoFuzzerHelper {
             .ok()
             .and_then(|v| v.parse::<u64>().ok())
             .unwrap_or(DEFAULT_LOAD_TIMEOUT_MS);
+        // 默认不截断/不丢弃大 HTML，完全交由 libFuzzer 的 -max_len 控制；
+        // 如需在 target 内部限制上限，可设置环境变量 SERVO_FUZZ_MAX_LEN
+        let max_input_len = std::env::var("SERVO_FUZZ_MAX_LEN")
+            .ok()
+            .and_then(|v| v.parse::<usize>().ok());
 
         Self {
             servo,
@@ -210,6 +215,7 @@ impl ServoFuzzerHelper {
             woken,
             enable_paint,
             load_timeout: Duration::from_millis(timeout_ms),
+            max_input_len,
         }
     }
 
@@ -231,12 +237,17 @@ impl ServoFuzzerHelper {
     }
 
     pub fn load_html(&self, data: &[u8]) {
-        if data.is_empty() || data.len() > MAX_INPUT_LEN {
+        if data.is_empty() {
             return;
+        }
+        if let Some(limit) = self.max_input_len {
+            if data.len() > limit {
+                return;
+            }
         }
 
         // 用 base64 编码 data URL，支持任意字节且避免 '#', '%', '\0' 截断 HTML/CSS
-        let url_str = format!("data:text/html;charset=utf-8;base64,{}", base64_encode(data));
+        let url_str = build_data_url(data);
         let Ok(url) = Url::parse(&url_str) else {
             return;
         };
@@ -276,9 +287,11 @@ impl ServoFuzzerHelper {
     }
 }
 
-fn base64_encode(input: &[u8]) -> String {
+fn build_data_url(input: &[u8]) -> String {
+    const PREFIX: &str = "data:text/html;charset=utf-8;base64,";
     const TABLE: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-    let mut out = String::with_capacity((input.len() + 2) / 3 * 4);
+    let mut out = String::with_capacity(PREFIX.len() + input.len().div_ceil(3) * 4);
+    out.push_str(PREFIX);
     for chunk in input.chunks(3) {
         let b0 = chunk[0] as u32;
         let b1 = if chunk.len() > 1 { chunk[1] as u32 } else { 0 };
