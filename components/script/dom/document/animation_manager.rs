@@ -741,11 +741,19 @@ impl AnimationManager {
         // Take all of the events here, in case sending one of these events
         // triggers adding new events by forcing a layout.
         let events = std::mem::take(&mut *self.pending_events.safe_borrow_mut(cx.no_gc()));
-        let web_animation_events = std::mem::take(
-            &mut *self
-                .pending_web_animation_events
-                .safe_borrow_mut(cx.no_gc()),
-        );
+        let web_animation_events: Vec<_> = self
+            .pending_web_animation_events
+            .safe_borrow_mut(cx.no_gc())
+            .drain(..)
+            .map(|event| {
+                (
+                    event.animation.as_rooted(),
+                    event.event_type,
+                    event.current_time,
+                    event.timeline_time,
+                )
+            })
+            .collect();
         if events.is_empty() && web_animation_events.is_empty() {
             return;
         }
@@ -826,15 +834,8 @@ impl AnimationManager {
             }
         }
 
-        for event in web_animation_events {
-            let animation = event.animation.as_rooted();
-            animation.dispatch_playback_event(
-                cx,
-                window,
-                event.event_type,
-                event.current_time,
-                event.timeline_time,
-            );
+        for (animation, event_type, current_time, timeline_time) in web_animation_events {
+            animation.dispatch_playback_event(cx, window, event_type, current_time, timeline_time);
         }
 
         if self.pending_events.borrow().is_empty() &&
