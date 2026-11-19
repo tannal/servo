@@ -27,7 +27,7 @@ promise_test(async t => {
   const family = 'CheckTestFont';
   const face = new FontFace(family, "url('resources/Rochester.otf')");
   document.fonts.add(face);
-  t.add_cleanup(() => document.fonts.delete(face));
+  t.add_cleanup(() => { document.fonts.delete(face); });
 
   assert_equals(face.status, 'unloaded');
   assert_false(document.fonts.check(`16px ${family}`, 'abc'),
@@ -47,7 +47,7 @@ promise_test(async t => {
     unicodeRange: 'U+0041-005A',
   });
   document.fonts.add(face);
-  t.add_cleanup(() => document.fonts.delete(face));
+  t.add_cleanup(() => { document.fonts.delete(face); });
 
   assert_true(document.fonts.check(`16px ${family}`, 'abc'),
     'check() returns true when text has no codepoints in unicodeRange');
