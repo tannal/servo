@@ -448,19 +448,22 @@ impl AnimationManager {
         matched
     }
 
-    fn handle_animation_presence_or_pending_events_change(&self, window: &Window) {
-        let has_running_animations = self.has_running_animations.get();
-        let has_running_web_animations = self
-            .web_animations
+    pub(crate) fn has_active_web_animations(&self) -> bool {
+        self.web_animations
             .borrow()
             .iter()
-            .any(|anim| anim.needs_tick());
-        let has_pending_events = !self.pending_events.borrow().is_empty() ||
-            !self.pending_web_animation_events.borrow().is_empty();
+            .any(|anim| anim.needs_tick()) ||
+            !self.pending_web_animation_events.borrow().is_empty()
+    }
+
+    fn handle_animation_presence_or_pending_events_change(&self, window: &Window) {
+        let has_running_animations = self.has_running_animations.get();
+        let has_active_web_animations = self.has_active_web_animations();
+        let has_pending_events = !self.pending_events.borrow().is_empty();
 
         // Do not send the AnimationCallbacksAbsent state until all pending
         // animation events are delivered.
-        let state = match has_running_animations || has_running_web_animations || has_pending_events
+        let state = match has_running_animations || has_active_web_animations || has_pending_events
         {
             true => AnimationsPresentState::AnimationsPresent,
             false => AnimationsPresentState::NoAnimationsPresent,

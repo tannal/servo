@@ -111,7 +111,7 @@ impl AnimationEffect {
     }
 
     /// <https://drafts.csswg.org/web-animations-1/#in-effect>
-    pub(crate) fn is_in_effect(&self, local_time: Option<f64>) -> bool {
+    pub(crate) fn is_in_effect(&self, local_time: Option<f64>, playback_rate: f64) -> bool {
         let Some(local_time) = local_time else {
             return false;
         };
@@ -120,10 +120,16 @@ impl AnimationEffect {
         let active_duration = self.active_duration();
         let end_time = (start_delay + active_duration).max(0.0);
         let fill = props.fill_mode;
+        let is_backwards = playback_rate < 0.0;
 
-        if local_time < start_delay {
+        let in_before =
+            local_time < start_delay || (is_backwards && local_time == start_delay);
+        let in_after =
+            local_time > end_time || (!is_backwards && local_time == end_time);
+
+        if in_before {
             matches!(fill, FillMode::Backwards | FillMode::Both)
-        } else if local_time >= end_time {
+        } else if in_after {
             matches!(fill, FillMode::Forwards | FillMode::Both)
         } else {
             true

@@ -3321,6 +3321,10 @@ impl Document {
             return true;
         }
 
+        if self.animation_manager.has_active_web_animations() {
+            return true;
+        }
+
         false
     }
 

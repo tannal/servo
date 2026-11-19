@@ -92,7 +92,7 @@ pub struct FontFace {
 /// CSS `<family-name>` (or would lose whitespace when parsed), serialize it as a quoted CSS string.
 /// See <https://github.com/w3c/csswg-drafts/issues/6236>.
 fn normalize_font_family(global: &GlobalScope, family: &DOMString) -> DOMString {
-    let family_str = family.str();
+    let family_str = family.to_string();
 
     // If the input is already a single CSS string token, keep it as-is.
     let mut string_parser = Parser::new(&family_str);
@@ -118,7 +118,7 @@ fn normalize_font_family(global: &GlobalScope, family: &DOMString) -> DOMString 
 
     let mut parser = Parser::new(&family_str);
     if let Ok(parsed) = parser.parse_entirely(|parser| FamilyName::parse(&parser_context, parser)) {
-        if parsed.to_css_string() == *family_str {
+        if parsed.to_css_string() == family_str {
             return family.clone();
         }
     }

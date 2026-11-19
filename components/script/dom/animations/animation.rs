@@ -235,7 +235,7 @@ impl Animation {
             AnimationPlayState::Finished => self
                 .associated_effect
                 .get()
-                .is_some_and(|effect| effect.is_in_effect(self.current_time())),
+                .is_some_and(|effect| effect.is_in_effect(self.current_time(), self.playback_rate.get())),
         }
     }
 
@@ -638,7 +638,8 @@ impl AnimationMethods<crate::DomTypeHolder> for Animation {
         if previous_time.is_some() {
             self.silently_set_current_time(previous_time);
         }
-        self.update_finished_state(cx, false, false);
+        self.update_finished_state(cx, true, false);
+        self.register_with_document();
     }
 
     /// <https://drafts.csswg.org/web-animations-1/#dom-animation-playstate>
@@ -801,7 +802,8 @@ impl AnimationMethods<crate::DomTypeHolder> for Animation {
                 if previous_time.is_some() {
                     self.silently_set_current_time(previous_time);
                 }
-                self.update_finished_state(cx, false, false);
+                self.update_finished_state(cx, true, false);
+                self.register_with_document();
             },
             AnimationPlayState::Running => {
                 let _ = self.play_animation(cx, false);
