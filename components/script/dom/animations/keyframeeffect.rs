@@ -59,12 +59,10 @@ pub(crate) struct KeyframeEffect {
     animationeffect: AnimationEffect,
 
     /// <https://drafts.csswg.org/web-animations-1/#effect-target-target-element>
-    // FIXME: Store a target pseudo-selector
-    // to fully match the concept of the effect target
-    //
-    // https://drafts.csswg.org/web-animations-1/#effect-target-target-pseudo-selector
-    // https://drafts.csswg.org/web-animations-1/#keyframe-effect-effect-target.
     target_element: MutNullableDom<Element>,
+
+    /// <https://drafts.csswg.org/web-animations-1/#effect-target-target-pseudo-selector>
+    pseudo_element: DomRefCell<Option<DOMString>>,
 
     /// <https://drafts.csswg.org/web-animations-1/#keyframe>
     keyframes: DomRefCell<Vec<Keyframe>>,
@@ -75,6 +73,7 @@ impl KeyframeEffect {
         Self {
             animationeffect: AnimationEffect::new_inherited(window),
             target_element: Default::default(),
+            pseudo_element: Default::default(),
             keyframes: Default::default(),
         }
     }
@@ -87,8 +86,12 @@ impl KeyframeEffect {
         reflect_dom_object_with_proto(cx, Box::new(Self::new_inherited(window)), window, proto)
     }
 
-    pub(crate) fn new(cx: &mut JSContext, window: &Window) -> DomRoot<Self> {
-        Self::new_with_proto(cx, window, None)
+    pub(crate) fn target_element(&self) -> Option<DomRoot<Element>> {
+        self.target_element.get()
+    }
+
+    pub(crate) fn pseudo_element(&self) -> Option<DOMString> {
+        self.pseudo_element.borrow().clone()
     }
 }
 
@@ -97,39 +100,72 @@ impl KeyframeEffectMethods<crate::DomTypeHolder> for KeyframeEffect {
     fn Constructor(
         cx: &mut JSContext,
         window: &Window,
-        _: Option<HandleObject>,
+        proto: Option<HandleObject>,
         target: Option<&Element>,
         keyframes: *mut JSObject,
-        _options: UnrestrictedDoubleOrKeyframeEffectOptions,
-    ) -> DomRoot<KeyframeEffect> {
+        options: UnrestrictedDoubleOrKeyframeEffectOptions,
+    ) -> Fallible<DomRoot<KeyframeEffect>> {
+        use script_bindings::codegen::GenericBindings::AnimationEffectBinding::OptionalEffectTiming;
+        use crate::dom::bindings::codegen::UnionTypes::UnrestrictedDoubleOrString;
+
         // Step 1. Create a new KeyframeEffect object, effect.
-        let effect = KeyframeEffect::new(cx, window);
+        let effect = KeyframeEffect::new_with_proto(cx, window, proto);
 
         // Step 2. Set the target element of effect to target.
         effect.target_element.set(target);
 
-        // TODO: Step 3. Set the target pseudo-selector to the result corresponding to
-        // the first matching condition below:
-
-        // TODO: Step 4. Let timing input be the result corresponding to the first matching
-        // condition below:
+        // Step 3 & Step 4. Set target pseudo-selector and build timing input from options.
+        let timing_input = match options {
+            UnrestrictedDoubleOrKeyframeEffectOptions::UnrestrictedDouble(duration) => {
+                OptionalEffectTiming {
+                    delay: None,
+                    direction: None,
+                    duration: Some(UnrestrictedDoubleOrString::UnrestrictedDouble(duration)),
+                    easing: None,
+                    endDelay: None,
+                    fill: None,
+                    iterationStart: None,
+                    iterations: None,
+                }
+            },
+            UnrestrictedDoubleOrKeyframeEffectOptions::KeyframeEffectOptions(opts) => {
+                *effect.pseudo_element.borrow_mut() = opts.pseudoElement;
+                OptionalEffectTiming {
+                    delay: Some(opts.parent.delay),
+                    direction: Some(opts.parent.direction),
+                    duration: Some(opts.parent.duration),
+                    easing: Some(opts.parent.easing),
+                    endDelay: Some(opts.parent.endDelay),
+                    fill: Some(opts.parent.fill),
+                    iterationStart: Some(opts.parent.iterationStart),
+                    iterations: Some(opts.parent.iterations),
+                }
+            },
+        };
 
         // Step 5. Call the procedure to update the timing properties of an animation effect of
         // effect from timing input.
-        // If that procedure causes an exception to be thrown, propagate the exception and abort this procedure.
+        effect
+            .upcast::<AnimationEffect>()
+            .update_the_timing_properties(&timing_input)?;
 
-        // TODO: Step 6. If options is a KeyframeEffectOptions object, assign the composite property of effect
-        // to the corresponding value from options.
-        //
-        // When assigning this property, the error-handling defined for the corresponding setter on the
-        //  KeyframeEffect interface is applied. If the setter requires an exception to be thrown for the value
-        //  specified by options, this procedure must throw the same exception and abort all further steps.
+        // TODO: Step 6. Assign the composite property of effect.
 
         // Step 7. Initialize the set of keyframes by performing the procedure defined for setKeyframes()
         // passing keyframes as the input.
         effect.SetKeyframes(cx, keyframes);
 
-        effect
+        Ok(effect)
+    }
+
+    /// <https://drafts.csswg.org/web-animations-1/#dom-keyframeeffect-target>
+    fn GetTarget(&self) -> Option<DomRoot<Element>> {
+        self.target_element.get()
+    }
+
+    /// <https://drafts.csswg.org/web-animations-1/#dom-keyframeeffect-target>
+    fn SetTarget(&self, target: Option<&Element>) {
+        self.target_element.set(target);
     }
 
     /// <https://drafts.csswg.org/web-animations-1/#dom-keyframeeffect-getkeyframes>

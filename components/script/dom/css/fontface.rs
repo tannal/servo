@@ -4,7 +4,7 @@
 
 use std::cell::{Cell, Ref, RefCell};
 
-use cssparser::Parser;
+use cssparser::{Parser, UnicodeRange, serialize_string};
 use dom_struct::dom_struct;
 use fonts::{
     FontContext, FontContextWebFontMethods, FontFaceRuleInfo, FontTemplate, LowercaseFontFamilyName,
@@ -15,12 +15,13 @@ use script_bindings::cell::DomRefCell;
 use script_bindings::reflector::{Reflector, reflect_dom_object_with_proto};
 use servo_arc::Arc as ServoArc;
 use style::error_reporting::ParseErrorReporter;
-use style::font_face::SourceList;
+use style::font_face::{FamilyName, SourceList};
+use style::parser::Parse;
 use style::properties::font_face::Descriptors;
 use style::stylesheets::{CssRuleType, FontFaceRule, UrlExtraData};
 use style_traits::{ParsingMode, ToCss};
 
-use crate::css::css::parser_context_for_document_with_reporter;
+use crate::css::css::{parser_context_for_document, parser_context_for_document_with_reporter};
 use crate::dom::bindings::buffer_source::get_buffer_source_copy;
 use crate::dom::bindings::codegen::Bindings::FontFaceBinding::{
     FontFaceDescriptors as FontFaceInputDescriptors, FontFaceLoadStatus, FontFaceMethods,
@@ -49,6 +50,12 @@ pub struct FontFace {
     #[no_trace = "Does not contain managed objects"]
     descriptors: DomRefCell<FontFaceDescriptors>,
 
+    #[no_trace = "Does not contain managed objects"]
+    parsed_family: DomRefCell<Option<FamilyName>>,
+
+    #[no_trace = "Does not contain managed objects"]
+    parsed_unicode_range: DomRefCell<Option<Vec<UnicodeRange>>>,
+
     /// A reference to the [`FontFaceSet`] that this `FontFace` is a member of, if it has been
     /// added to one. `None` otherwise. The spec suggests that a `FontFace` can be a member of
     /// multiple `FontFaceSet`s, but this doesn't seem to be the case in practice, as the
@@ -76,6 +83,44 @@ pub struct FontFace {
     #[no_trace]
     #[conditional_malloc_size_of]
     css_font_face_rule: DomRefCell<Option<ServoArc<FontFaceRuleInfo>>>,
+}
+
+/// Normalize a font family name passed to `new FontFace(family, ...)`:
+/// if it is not already a single CSS string and cannot be parsed cleanly as an unquoted
+/// CSS `<family-name>` (or would lose whitespace when parsed), serialize it as a quoted CSS string.
+/// See <https://github.com/w3c/csswg-drafts/issues/6236>.
+fn normalize_font_family(global: &GlobalScope, family: &DOMString) -> DOMString {
+    let family_str = family.str();
+
+    // If the input is already a single CSS string token, keep it as-is.
+    let mut string_parser = Parser::new(&family_str);
+    if string_parser
+        .parse_entirely(|parser| parser.expect_string().map(|_| ()))
+        .is_ok()
+    {
+        return family.clone();
+    }
+
+    let window = global.as_window();
+    let document = window.Document();
+    let url_data = UrlExtraData(document.owner_global().api_base_url().get_arc());
+    let parser_context = parser_context_for_document(
+        &document,
+        CssRuleType::FontFace,
+        ParsingMode::DEFAULT,
+        &url_data,
+    );
+
+    let mut parser = Parser::new(&family_str);
+    if let Ok(parsed) = parser.parse_entirely(|parser| FamilyName::parse(&parser_context, parser)) {
+        if parsed.to_css_string() == *family_str {
+            return family.clone();
+        }
+    }
+
+    let mut quoted = String::with_capacity(family_str.len() + 2);
+    let _ = serialize_string(&family_str, &mut quoted);
+    DOMString::from(quoted)
 }
 
 /// Given the various font face descriptors, construct the equivalent `@font-face` css rule as a
@@ -243,6 +288,8 @@ impl FontFace {
         // DOMException named "SyntaxError"
         font_status_promise
             .reject_error(cx, Error::Syntax(Some("Failed to parse font face".into())));
+        // Avoid firing spurious unhandledrejection events when callers never access `face.loaded`.
+        font_status_promise.set_promise_is_handled(cx);
 
         // set font face’s corresponding attributes to the empty string, and set font face’s status
         // attribute to "error"
@@ -266,6 +313,8 @@ impl FontFace {
                     weight: DOMString::new(),
                     width: DOMString::new(),
                 }),
+                parsed_family: DomRefCell::default(),
+                parsed_unicode_range: DomRefCell::default(),
                 status: Cell::new(FontFaceLoadStatus::Error),
                 template: RefCell::default(),
                 css_font_face_rule: Default::default(),
@@ -290,6 +339,8 @@ impl FontFace {
 
             // Set font face’s corresponding attributes to the serialization of the parsed values.
             descriptors: DomRefCell::new(serialize_parsed_descriptors(descriptors)),
+            parsed_family: DomRefCell::new(descriptors.font_family.clone()),
+            parsed_unicode_range: DomRefCell::new(descriptors.unicode_range.clone()),
 
             font_face_set: MutNullableDom::default(),
             family_name: DomRefCell::new(family_name),
@@ -331,10 +382,14 @@ impl FontFace {
         font_status_promise: &RootedPromise,
         font_face_rule: ServoArc<FontFaceRuleInfo>,
     ) -> Self {
+        let parsed_family = font_face_rule.descriptors.font_family.clone();
+        let parsed_unicode_range = font_face_rule.descriptors.unicode_range.clone();
         Self {
             reflector: Reflector::new(),
             status: Cell::new(FontFaceLoadStatus::Loading),
             descriptors: DomRefCell::new(descriptors),
+            parsed_family: DomRefCell::new(parsed_family),
+            parsed_unicode_range: DomRefCell::new(parsed_unicode_range),
             font_face_set: MutNullableDom::default(),
             family_name: DomRefCell::new(family_name),
             urls: DomRefCell::new(src),
@@ -474,6 +529,35 @@ impl FontFace {
         self.template.borrow().clone()
     }
 
+    pub(super) fn matches_family_and_text(
+        &self,
+        target_family: &FamilyName,
+        sample_text: &str,
+    ) -> bool {
+        let parsed_family = self.parsed_family.borrow();
+        if parsed_family
+            .as_ref()
+            .is_none_or(|family| family != target_family)
+        {
+            return false;
+        }
+
+        let parsed_unicode_range = self.parsed_unicode_range.borrow();
+        if let Some(ranges) = parsed_unicode_range.as_ref() {
+            if !sample_text.chars().any(|character| {
+                ranges
+                    .iter()
+                    .any(|range| (range.start..=range.end).contains(&(character as u32)))
+            }) {
+                return false;
+            }
+        } else if sample_text.is_empty() {
+            return false;
+        }
+
+        true
+    }
+
     /// Implements the body of the setter for the descriptor attributes of the [`FontFace`] interface.
     ///
     /// <https://drafts.csswg.org/css-font-loading/#fontface-interface>:
@@ -491,6 +575,9 @@ impl FontFace {
 
         *self.descriptors.borrow_mut() =
             serialize_parsed_descriptors(&parsed_font_face_rule.descriptors);
+        *self.parsed_family.borrow_mut() = parsed_font_face_rule.descriptors.font_family.clone();
+        *self.parsed_unicode_range.borrow_mut() =
+            parsed_font_face_rule.descriptors.unicode_range.clone();
         Ok(())
     }
 
@@ -516,8 +603,10 @@ impl FontFaceMethods<crate::DomTypeHolder> for FontFace {
     fn SetFamily(&self, family_name: DOMString) -> ErrorResult {
         let descriptors = self.descriptors.borrow();
         let global = self.global();
-        let _ = parse_font_face_descriptors(&global, &family_name, None, &descriptors)?;
+        let parsed_font_face_rule =
+            parse_font_face_descriptors(&global, &family_name, None, &descriptors)?;
         *self.family_name.borrow_mut() = family_name;
+        *self.parsed_family.borrow_mut() = parsed_font_face_rule.descriptors.font_family.clone();
         Ok(())
     }
 
@@ -770,6 +859,7 @@ impl FontFaceMethods<crate::DomTypeHolder> for FontFace {
         // the source argument is a CSSOMString, parse it according to the grammar of the CSS src
         // descriptor of the @font-face rule.
         let global = window.as_global_scope();
+        let family = normalize_font_family(global, &family);
         let parse_result =
             parse_font_face_descriptors(global, &family, url_source, &descriptors.into());
 

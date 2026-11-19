@@ -76,8 +76,8 @@ impl AnimationEffect {
             specified_timing_properties: DomRefCell::new(SpecifiedTimingProperties {
                 start_delay: Default::default(),
                 end_delay: Default::default(),
-                fill_mode: FillMode::None,
-                iteration_count: Default::default(),
+                fill_mode: FillMode::Auto,
+                iteration_count: 1.0,
                 iteration_start: Default::default(),
                 iteration_duration: IterationDurationOrAuto::Auto,
                 playback_direction: PlaybackDirection::Normal,
@@ -88,6 +88,46 @@ impl AnimationEffect {
 
     pub(crate) fn window(&self) -> &Window {
         &self.window
+    }
+
+    /// <https://drafts.csswg.org/web-animations-1/#active-duration>
+    pub(crate) fn active_duration(&self) -> f64 {
+        let props = self.specified_timing_properties.borrow();
+        let duration = props.iteration_duration.computed_value();
+        let iterations = props.iteration_count;
+        if duration == 0.0 || iterations == 0.0 {
+            0.0
+        } else {
+            duration * iterations
+        }
+    }
+
+    /// <https://drafts.csswg.org/web-animations-1/#end-time>
+    pub(crate) fn end_time(&self) -> f64 {
+        let props = self.specified_timing_properties.borrow();
+        let active_duration = self.active_duration();
+        let sum = *props.start_delay + active_duration + *props.end_delay;
+        if sum.is_nan() { 0.0 } else { sum.max(0.0) }
+    }
+
+    /// <https://drafts.csswg.org/web-animations-1/#in-effect>
+    pub(crate) fn is_in_effect(&self, local_time: Option<f64>) -> bool {
+        let Some(local_time) = local_time else {
+            return false;
+        };
+        let props = self.specified_timing_properties.borrow();
+        let start_delay = *props.start_delay;
+        let active_duration = self.active_duration();
+        let end_time = (start_delay + active_duration).max(0.0);
+        let fill = props.fill_mode;
+
+        if local_time < start_delay {
+            matches!(fill, FillMode::Backwards | FillMode::Both)
+        } else if local_time >= end_time {
+            matches!(fill, FillMode::Forwards | FillMode::Both)
+        } else {
+            true
+        }
     }
 
     /// <https://drafts.csswg.org/web-animations-1/#update-the-timing-properties-of-an-animation-effect>
@@ -274,9 +314,9 @@ impl AnimationEffectMethods<crate::DomTypeHolder> for AnimationEffect {
                 iterationStart: specified_timing_properties.iteration_start,
                 iterations: specified_timing_properties.iteration_count,
             },
-            // FIXME: These are just placeholder values
-            endTime: None,
-            activeDuration: None,
+            endTime: Some(self.end_time()),
+            activeDuration: Some(self.active_duration()),
+            // FIXME: Compute localTime, progress, and currentIteration from associated animation
             localTime: None,
             progress: None,
             currentIteration: None,

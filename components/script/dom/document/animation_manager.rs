@@ -12,7 +12,7 @@ use std::time::Duration;
 
 use cssparser::ToCss;
 use embedder_traits::{AnimationState as AnimationsPresentState, UntrustedNodeAddress};
-use js::context::NoGC;
+use js::context::{JSContext, NoGC};
 use layout_api::AnimatingImages;
 use libc::c_void;
 use paint_api::ImageUpdate;
@@ -30,8 +30,10 @@ use style::animation::{
 };
 use style::dom::OpaqueNode;
 use style::selector_parser::PseudoElement;
+use stylo_atoms::Atom;
 use timers::TimerId;
 
+use crate::dom::animation::Animation as WebAnimation;
 use crate::dom::animationevent::AnimationEvent;
 use crate::dom::bindings::codegen::Bindings::AnimationEventBinding::AnimationEventInit;
 use crate::dom::bindings::codegen::Bindings::EventBinding::EventInit;
@@ -41,11 +43,22 @@ use crate::dom::bindings::num::Finite;
 use crate::dom::bindings::root::{Dom, DomRoot};
 use crate::dom::bindings::str::DOMString;
 use crate::dom::bindings::trace::NoTrace;
+use crate::dom::element::Element;
 use crate::dom::event::Event;
 use crate::dom::node::{Node, NodeDamage, NodeTraits, from_untrusted_node_address};
 use crate::dom::transitionevent::TransitionEvent;
 use crate::dom::window::Window;
 use crate::event_loop::script_thread::with_script_thread;
+
+#[derive(JSTraceable, MallocSizeOf)]
+#[cfg_attr(crown, crown::unrooted_must_root_lint::must_root)]
+struct PendingWebAnimationEvent {
+    animation: Dom<WebAnimation>,
+    #[no_trace]
+    event_type: Atom,
+    current_time: Option<f64>,
+    timeline_time: Option<f64>,
+}
 
 /// The set of animations for a document.
 #[derive(Default, JSTraceable, MallocSizeOf)]
@@ -74,6 +87,12 @@ pub(crate) struct AnimationManager {
     /// A list of pending animation-related events.
     pending_events: DomRefCell<Vec<TransitionOrAnimationEvent>>,
 
+    /// Tracked Web Animations API [`WebAnimation`] instances associated with this document.
+    web_animations: DomRefCell<Vec<Dom<WebAnimation>>>,
+
+    /// Pending Web Animations playback events (`finish`, `cancel`, `remove`).
+    pending_web_animation_events: DomRefCell<Vec<PendingWebAnimationEvent>>,
+
     /// The timeline value at the last time all animations were marked dirty.
     /// This is used to prevent marking animations dirty when the timeline
     /// has not changed.
@@ -93,6 +112,8 @@ impl AnimationManager {
             rooted_animation_nodes: Default::default(),
             rooted_image_nodes: Default::default(),
             pending_events: Default::default(),
+            web_animations: Default::default(),
+            pending_web_animation_events: Default::default(),
             timeline_value_at_last_dirty: Cell::new(0.0),
             image_callback_timer_id: Default::default(),
         }
@@ -112,6 +133,8 @@ impl AnimationManager {
         self.rooted_animation_nodes.borrow_mut().clear();
         self.rooted_image_nodes.borrow_mut().clear();
         self.pending_events.borrow_mut().clear();
+        self.web_animations.borrow_mut().clear();
+        self.pending_web_animation_events.borrow_mut().clear();
     }
 
     // Mark all animations dirty, if they haven't been marked dirty since the
@@ -331,13 +354,114 @@ impl AnimationManager {
         self.handle_animation_presence_or_pending_events_change(window);
     }
 
+    pub(crate) fn register_web_animation(&self, window: &Window, animation: &WebAnimation) {
+        let mut web_animations = self.web_animations.borrow_mut();
+        if !web_animations.iter().any(|existing| &**existing == animation) {
+            web_animations.push(Dom::from_ref(animation));
+        }
+        drop(web_animations);
+        self.handle_animation_presence_or_pending_events_change(window);
+    }
+
+    pub(crate) fn queue_web_animation_event(
+        &self,
+        window: &Window,
+        animation: &WebAnimation,
+        event_type: Atom,
+        current_time: Option<f64>,
+        timeline_time: Option<f64>,
+    ) {
+        self.pending_web_animation_events
+            .borrow_mut()
+            .push(PendingWebAnimationEvent {
+                animation: Dom::from_ref(animation),
+                event_type,
+                current_time,
+                timeline_time,
+            });
+        self.handle_animation_presence_or_pending_events_change(window);
+    }
+
+    pub(crate) fn update_web_animations(&self, cx: &mut JSContext, window: &Window) {
+        let animations: Vec<DomRoot<WebAnimation>> = self
+            .web_animations
+            .borrow()
+            .iter()
+            .map(|anim| anim.as_rooted())
+            .collect();
+
+        for animation in animations {
+            animation.tick(cx);
+        }
+
+        // Keep animations that are still relevant (for getAnimations()) or still need frame ticks.
+        self.web_animations
+            .borrow_mut()
+            .retain(|anim| anim.is_relevant() || anim.needs_tick());
+
+        self.handle_animation_presence_or_pending_events_change(window);
+    }
+
+    pub(crate) fn get_animations_for_element(
+        &self,
+        element: &Element,
+        subtree: bool,
+        pseudo_element: Option<&DOMString>,
+    ) -> Vec<DomRoot<WebAnimation>> {
+        let mut matched: Vec<DomRoot<WebAnimation>> = self
+            .web_animations
+            .borrow()
+            .iter()
+            .filter_map(|anim| {
+                if !anim.is_relevant() {
+                    return None;
+                }
+                let effect = anim.keyframe_effect()?;
+                let target = effect.target_element()?;
+
+                let target_matches = if subtree {
+                    &*target == element ||
+                        element
+                            .upcast::<Node>()
+                            .is_ancestor_of(target.upcast::<Node>())
+                } else {
+                    &*target == element
+                };
+                if !target_matches {
+                    return None;
+                }
+
+                let effect_pseudo = effect.pseudo_element();
+                let pseudo_matches = match pseudo_element {
+                    Some(wanted) => effect_pseudo.as_ref() == Some(wanted),
+                    None => subtree || effect_pseudo.is_none(),
+                };
+                if !pseudo_matches {
+                    return None;
+                }
+
+                Some(anim.as_rooted())
+            })
+            .collect();
+
+        matched.sort_by_key(|anim| anim.sequence_number());
+        matched
+    }
+
     fn handle_animation_presence_or_pending_events_change(&self, window: &Window) {
         let has_running_animations = self.has_running_animations.get();
-        let has_pending_events = !self.pending_events.borrow().is_empty();
+        let has_running_web_animations = self
+            .web_animations
+            .borrow()
+            .iter()
+            .any(|anim| anim.needs_tick());
+        let has_pending_events = !self.pending_events.borrow().is_empty() ||
+            !self.pending_web_animation_events.borrow().is_empty();
 
         // Do not send the AnimationCallbacksAbsent state until all pending
         // animation events are delivered.
-        let state = match has_running_animations || has_pending_events {
+        let state = match has_running_animations || has_running_web_animations || has_pending_events
+        {
             true => AnimationsPresentState::AnimationsPresent,
             false => AnimationsPresentState::NoAnimationsPresent,
         };
@@ -617,7 +741,12 @@ impl AnimationManager {
         // Take all of the events here, in case sending one of these events
         // triggers adding new events by forcing a layout.
         let events = std::mem::take(&mut *self.pending_events.safe_borrow_mut(cx.no_gc()));
-        if events.is_empty() {
+        let web_animation_events = std::mem::take(
+            &mut *self
+                .pending_web_animation_events
+                .safe_borrow_mut(cx.no_gc()),
+        );
+        if events.is_empty() && web_animation_events.is_empty() {
             return;
         }
 
@@ -697,7 +826,20 @@ impl AnimationManager {
             }
         }
 
-        if self.pending_events.borrow().is_empty() {
+        for event in web_animation_events {
+            let animation = event.animation.as_rooted();
+            animation.dispatch_playback_event(
+                cx,
+                window,
+                event.event_type,
+                event.current_time,
+                event.timeline_time,
+            );
+        }
+
+        if self.pending_events.borrow().is_empty() &&
+            self.pending_web_animation_events.borrow().is_empty()
+        {
             self.handle_animation_presence_or_pending_events_change(window);
         }
     }

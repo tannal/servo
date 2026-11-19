@@ -2,7 +2,7 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
-use cssparser::{Parser, UnicodeRange};
+use cssparser::Parser;
 use dom_struct::dom_struct;
 use fonts::FontFaceRuleInfo;
 use js::context::JSContext;
@@ -199,27 +199,7 @@ impl FontFaceSet {
     fn query_fonts(&self, target_family: &FamilyName, sample_text: &str) -> Vec<DomRoot<FontFace>> {
         let mut matching_fonts = Vec::default();
         for font in self.set_entries.borrow().iter() {
-            let font_face_rule = font.css_font_face_rule();
-            let Some(font_face_rule) = font_face_rule.as_ref() else {
-                // FIXME: Don't ignore font faces that are not css-connected here.
-                continue;
-            };
-
-            if font_face_rule
-                .descriptors
-                .font_family
-                .as_ref()
-                .is_none_or(|family| family != target_family)
-            {
-                continue;
-            }
-
-            if font_face_rule
-                .descriptors
-                .unicode_range
-                .as_ref()
-                .is_some_and(|ranges| !any_character_in_any_unicode_range(sample_text, ranges))
-            {
+            if !font.matches_family_and_text(target_family, sample_text) {
                 continue;
             }
 
@@ -387,6 +367,9 @@ impl FontFaceSetMethods<crate::DomTypeHolder> for FontFaceSet {
                 };
                 let document = window.Document();
 
+                // Ensure any pending stylesheet @font-face rules are present.
+                this.flush_author_font_set(cx);
+
                 // Step 3. Find the matching font faces from font face set using the font and text
                 // arguments passed to the function, and let font face list be the return value (ignoring
                 // the found faces flag). If a syntax error was returned, reject promise with a SyntaxError
@@ -398,15 +381,16 @@ impl FontFaceSetMethods<crate::DomTypeHolder> for FontFaceSet {
 
                 // Step 4.1. For all of the font faces in the font face list, call their load()
                 // method.
+                for font_face in &font_face_objects {
+                    font_face.Load(cx);
+                }
+
                 // Step 4.2. Resolve promise with the result of waiting for all of the
                 // [[FontStatusPromise]]s of each font face in the font face list, in order.
                 //
-                // TODO: These steps are not implemented. Instead we wait until all fonts
+                // TODO: These steps are not fully implemented. Instead we wait until all fonts
                 // are loaded by resolving the returned promise when
-                // `document.fonts.ready` is resolved. The return list of fonts will not
-                // be correct, but any code that waits on the promise will have
-                // conservatively consistent behavior. This is important for preventing
-                // intermittent results in WPT tests.
+                // `document.fonts.ready` is resolved.
                 let global = this.global();
                 let handler = PromiseNativeHandler::new(
                     cx,
@@ -425,6 +409,34 @@ impl FontFaceSetMethods<crate::DomTypeHolder> for FontFaceSet {
 
         // Step 2. Return promise. Complete the rest of these steps asynchronously.
         load_promise
+    }
+
+    /// <https://drafts.csswg.org/css-font-loading/#dom-fontfaceset-check>
+    fn Check(&self, cx: &mut JSContext, font: DOMString, text: DOMString) -> Fallible<bool> {
+        self.flush_author_font_set(cx);
+
+        let Some(window) = DomRoot::downcast::<Window>(self.global()) else {
+            return Ok(true);
+        };
+        let document = window.Document();
+
+        // Step 1. Let font face set be the FontFaceSet object this method was called on.
+        // Step 2. Find the matching font faces from font face set using the font and text arguments
+        // passed to the function, and including system fonts, and let font face list be the return
+        // value (ignoring the found faces flag). If a syntax error was returned, throw a SyntaxError
+        // exception and abort these steps.
+        let Ok(font_face_list) =
+            self.find_the_matching_font_faces(&document, &font.str(), &text.str())
+        else {
+            return Err(Error::Syntax(Some("Failed to parse font query".into())));
+        };
+
+        // Step 3. If font face list is empty, or all fonts in font face list have a status attribute
+        // of "loaded", return true and abort these steps.
+        // Step 4. Otherwise, return false.
+        Ok(font_face_list
+            .iter()
+            .all(|font_face| font_face.Status() == FontFaceLoadStatus::Loaded))
     }
 
     /// <https://html.spec.whatwg.org/multipage/#customstateset>
@@ -523,15 +535,4 @@ impl FontQueryParameters {
             families: font_family,
         })
     }
-}
-
-fn any_character_in_any_unicode_range(text: &str, unicode_ranges: &[UnicodeRange]) -> bool {
-    for character in text.chars() {
-        for unicode_range in unicode_ranges {
-            if (unicode_range.start..=unicode_range.end).contains(&(character as u32)) {
-                return true;
-            }
-        }
-    }
-    false
 }

@@ -1,0 +1,67 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>CSS Font Loading: FontFaceSet.prototype.check()</title>
+<link rel="help" href="https://drafts.csswg.org/css-font-loading/#dom-fontfaceset-check">
+<script src="/resources/testharness.js"></script>
+<script src="/resources/testharnessreport.js"></script>
+<script>
+'use strict';
+
+test(() => {
+  assert_throws_dom('SyntaxError', () => {
+    document.fonts.check('invalid font syntax');
+  });
+  for (const keyword of ['initial', 'inherit', 'unset', 'revert', 'revert-layer']) {
+    assert_throws_dom('SyntaxError', () => {
+      document.fonts.check(keyword);
+    }, `CSS-wide keyword "${keyword}" should throw SyntaxError`);
+  }
+}, 'check() throws SyntaxError for invalid font queries');
+
+test(() => {
+  assert_true(document.fonts.check('16px sans-serif'));
+  assert_true(document.fonts.check('16px NonExistentFontFamily12345'));
+}, 'check() returns true for generic and unknown font families');
+
+promise_test(async t => {
+  const family = 'CheckTestFont';
+  const face = new FontFace(family, "url('resources/Rochester.otf')");
+  document.fonts.add(face);
+  t.add_cleanup(() => document.fonts.delete(face));
+
+  assert_equals(face.status, 'unloaded');
+  assert_false(document.fonts.check(`16px ${family}`, 'abc'),
+    'check() returns false for unloaded matching FontFace');
+  assert_equals(face.status, 'unloaded',
+    'check() must not initiate loading');
+
+  await face.load();
+  assert_equals(face.status, 'loaded');
+  assert_true(document.fonts.check(`16px ${family}`, 'abc'),
+    'check() returns true once matching FontFace is loaded');
+}, 'check() reflects FontFace load status without initiating load');
+
+promise_test(async t => {
+  const family = 'CheckUnicodeRangeFont';
+  const face = new FontFace(family, "url('resources/Rochester.otf')", {
+    unicodeRange: 'U+0041-005A',
+  });
+  document.fonts.add(face);
+  t.add_cleanup(() => document.fonts.delete(face));
+
+  assert_true(document.fonts.check(`16px ${family}`, 'abc'),
+    'check() returns true when text has no codepoints in unicodeRange');
+  assert_false(document.fonts.check(`16px ${family}`, 'ABC'),
+    'check() returns false when text matches unloaded FontFace unicodeRange');
+
+  await face.load();
+  assert_true(document.fonts.check(`16px ${family}`, 'ABC'),
+    'check() returns true when matching unicodeRange FontFace is loaded');
+}, 'check() respects unicodeRange and text parameter');
+
+promise_test(async t => {
+  const face = new FontFace('CheckFailedFont', '');
+  assert_equals(face.status, 'error');
+  await promise_rejects_dom(t, 'SyntaxError', face.loaded);
+}, 'FontFace with invalid source sets status to error and rejects loaded with SyntaxError');
+</script>

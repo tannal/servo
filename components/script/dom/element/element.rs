@@ -4612,7 +4612,7 @@ impl ElementMethods<crate::DomTypeHolder> for Element {
         cx: &mut JSContext,
         keyframes: *mut JSObject,
         options: UnrestrictedDoubleOrKeyframeAnimationOptions,
-    ) -> DomRoot<Animation> {
+    ) -> Fallible<DomRoot<Animation>> {
         let window = self.owner_window();
 
         // Step 1. Let target be the object on which this method was called.
@@ -4621,13 +4621,13 @@ impl ElementMethods<crate::DomTypeHolder> for Element {
         // Step 3. If options is a KeyframeAnimationOptions object, let timeline be the timeline member of
         // options or, if timeline member of options is missing, the default document timeline of the node document
         // of the element on which this method was called.
-        let timeline =
+        let (timeline, id) =
             if let UnrestrictedDoubleOrKeyframeAnimationOptions::KeyframeAnimationOptions(options) =
                 &options
             {
-                options.timeline.clone().flatten()
+                (options.timeline.clone().flatten(), Some(options.id.clone()))
             } else {
-                None
+                (None, None)
             };
         let timeline = timeline.unwrap_or_else(|| {
             let document = self.owner_document();
@@ -4637,7 +4637,7 @@ impl ElementMethods<crate::DomTypeHolder> for Element {
         // Step 2. Construct a new KeyframeEffect object effect in the relevant Realm
         // of target by using the same procedure as the KeyframeEffect(target, keyframes, options)
         // constructor, passing target as the target argument, and the keyframes and options arguments
-        //  as supplied.
+        // as supplied.
         //
         // If the above procedure causes an exception to be thrown, propagate the exception and
         // abort this procedure.
@@ -4650,7 +4650,7 @@ impl ElementMethods<crate::DomTypeHolder> for Element {
             },
         };
         let effect =
-            KeyframeEffect::Constructor(cx, &window, None, Some(target), keyframes, parent_options);
+            KeyframeEffect::Constructor(cx, &window, None, Some(target), keyframes, parent_options)?;
 
         // Step 4. Construct a new Animation object, animation, in the relevant Realm of target by using
         // the same procedure as the Animation() constructor, passing effect and timeline as arguments of
@@ -4663,13 +4663,30 @@ impl ElementMethods<crate::DomTypeHolder> for Element {
             Some(Some(&timeline)),
         );
 
-        // TODO: Step 5. If options is a KeyframeAnimationOptions object, assign the value of the id member of options
+        // Step 5. If options is a KeyframeAnimationOptions object, assign the value of the id member of options
         // to animation’s id attribute.
+        if let Some(id) = id {
+            animation.SetId(id);
+        }
 
-        // TODO: Step 6. Run the procedure to play an animation for animation with the auto-rewind flag set to true.
+        // Step 6. Run the procedure to play an animation for animation with the auto-rewind flag set to true.
+        animation.Play(cx)?;
 
         // Step 7. Return animation.
-        animation
+        Ok(animation)
+    }
+
+    /// <https://drafts.csswg.org/web-animations-1/#dom-animatable-getanimations>
+    fn GetAnimations(
+        &self,
+        options: &script_bindings::codegen::GenericBindings::AnimatableBinding::GetAnimationsOptions,
+    ) -> Vec<DomRoot<Animation>> {
+        let document = self.owner_document();
+        document.animation_manager().get_animations_for_element(
+            self,
+            options.subtree,
+            options.pseudoElement.as_ref(),
+        )
     }
 }
 
