@@ -51,9 +51,11 @@ pub struct FontFace {
     descriptors: DomRefCell<FontFaceDescriptors>,
 
     #[no_trace = "Does not contain managed objects"]
+    #[ignore_malloc_size_of = "Defined in style"]
     parsed_family: DomRefCell<Option<FamilyName>>,
 
     #[no_trace = "Does not contain managed objects"]
+    #[ignore_malloc_size_of = "Defined in cssparser"]
     parsed_unicode_range: DomRefCell<Option<Vec<UnicodeRange>>>,
 
     /// A reference to the [`FontFaceSet`] that this `FontFace` is a member of, if it has been
@@ -95,7 +97,10 @@ fn normalize_font_family(global: &GlobalScope, family: &DOMString) -> DOMString 
     // If the input is already a single CSS string token, keep it as-is.
     let mut string_parser = Parser::new(&family_str);
     if string_parser
-        .parse_entirely(|parser| parser.expect_string().map(|_| ()))
+        .parse_entirely(|parser| {
+            parser.expect_string()?;
+            Ok::<_, cssparser::ParseError<'_, ()>>(())
+        })
         .is_ok()
     {
         return family.clone();
