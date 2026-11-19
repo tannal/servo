@@ -51,6 +51,7 @@ enum PendingTask {
 }
 
 #[derive(JSTraceable, MallocSizeOf)]
+#[cfg_attr(crown, crown::unrooted_must_root_lint::must_root)]
 struct FinishNotificationMicrotask {
     animation: Dom<Animation>,
 }
