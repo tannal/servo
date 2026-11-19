@@ -99,7 +99,7 @@ fn normalize_font_family(global: &GlobalScope, family: &DOMString) -> DOMString 
     if string_parser
         .parse_entirely(|parser| {
             parser.expect_string()?;
-            Ok::<_, cssparser::ParseError<'_, ()>>(())
+            Ok::<_, cssparser::ParseError<()>>(())
         })
         .is_ok()
     {
