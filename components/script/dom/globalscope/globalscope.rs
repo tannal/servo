@@ -260,8 +260,7 @@ pub(crate) struct GlobalScope {
 
     /// In-flight module graph loads owned by this global scope so they are traced by GC
     /// and dropped on `tear_down` if a descendant module fetch never settles.
-    #[allow(clippy::vec_box)]
-    pending_module_loads: DomRefCell<HashMapTracedValues<usize, Box<LoadState>, FxBuildHasher>>,
+    pending_module_loads: DomRefCell<FxHashMap<usize, Box<LoadState>>>,
 
     /// Dependent AbortSignals that must be kept alive per
     /// <https://dom.spec.whatwg.org/#abort-signal-garbage-collection?
@@ -354,7 +353,7 @@ impl GlobalScope {
     pub(crate) fn tear_down(&self) {
         self.fetch_group_mut().terminate(self);
         self.lifecycle_registry.tear_down();
-        self.pending_module_loads.borrow_mut().0.clear();
+        self.pending_module_loads.borrow_mut().clear();
         self.with_module_map(|module_map| std::mem::take(&mut *module_map.borrow_mut()));
     }
 
@@ -442,7 +441,7 @@ impl GlobalScope {
             list_auto_close_worker: Default::default(),
             lifecycle_registry: LifecycleRegistry::new(),
             next_module_load_id: Cell::new(0),
-            pending_module_loads: DomRefCell::new(HashMapTracedValues::new_fx()),
+            pending_module_loads: DomRefCell::new(FxHashMap::default()),
             abort_signal_dependents: Default::default(),
             uncaught_rejections: Default::default(),
             consumed_rejections: Default::default(),

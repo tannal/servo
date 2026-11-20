@@ -506,18 +506,26 @@ impl IDBFactory {
     pub(crate) fn abort_pending_upgrades_and_close_databases(&self) {
         *self.callback.borrow_mut() = None;
         self.indexeddb_transactions.borrow_mut().0.clear();
-        let connections = std::mem::take(&mut *self.connections.borrow_mut());
-        if connections.is_empty() {
-            return;
-        }
+        let (pending_upgrades, requests) = {
+            let mut connections = self.connections.borrow_mut();
+            if connections.is_empty() {
+                return;
+            }
+            let pending_upgrades = connections
+                .iter()
+                .map(|(key, val)| {
+                    let ids: HashSet<Uuid> = val.iter().map(|(k, _v)| *k).collect();
+                    (key.0.clone(), ids)
+                })
+                .collect();
+            let requests: Vec<DomRoot<IDBOpenDBRequest>> = connections
+                .values()
+                .flat_map(|requests| requests.values().map(|request| request.as_rooted()))
+                .collect();
+            connections.0.clear();
+            (pending_upgrades, requests)
+        };
         let global = self.global();
-        let pending_upgrades = connections
-            .iter()
-            .map(|(key, val)| {
-                let ids: HashSet<Uuid> = val.iter().map(|(k, _v)| *k).collect();
-                (key.0.clone(), ids)
-            })
-            .collect();
         let origin = global.origin().immutable().clone();
         let Ok(proxy_map) = self.obtain_a_local_storage_bottle_map(&global, origin.clone()) else {
             debug_assert!(false, "Failed to obtain a proxy map.");
@@ -537,11 +545,9 @@ impl IDBFactory {
             error!("Failed to send SyncOperation::AbortPendingUpgrade");
         }
 
-        for requests in connections.values() {
-            for request in requests.values() {
-                if let Some(database) = request.pending_connection() {
-                    database.close_a_database_connection(true /* forced */);
-                }
+        for request in requests {
+            if let Some(database) = request.pending_connection() {
+                database.close_a_database_connection(true /* forced */);
             }
         }
     }
