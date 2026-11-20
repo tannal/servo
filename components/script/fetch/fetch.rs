@@ -34,7 +34,7 @@ use serde::{Deserialize, Serialize};
 use servo_base::generic_channel::GenericCallback;
 use servo_base::id::WebViewId;
 use servo_url::ServoUrl;
-use timers::TimerEventRequest;
+use timers::{TimerEventRequest, TimerId};
 use uuid::Uuid;
 
 use crate::dom::TracedPromise;
@@ -242,6 +242,9 @@ impl FetchGroup {
         global: &GlobalScope,
         deferred_fetch: &DeferredFetchRecord,
     ) {
+        if let Some(timer_id) = deferred_fetch.timer_id.take() {
+            global.cancel_timer(timer_id);
+        }
         // Step 1. If deferredRecord’s invoke state is not "pending", then return.
         if deferred_fetch.invoke_state.get() != DeferredFetchRecordInvokeState::Pending {
             return;
@@ -442,6 +445,7 @@ fn queue_deferred_fetch(
         request,
         invoke_state: Cell::new(DeferredFetchRecordInvokeState::Pending),
         activated: Cell::new(false),
+        timer_id: Cell::new(None),
     };
 
     // Step 5. Append deferredRecord to request’s client’s fetch group’s deferred fetch records.
@@ -450,13 +454,14 @@ fn queue_deferred_fetch(
         .append_deferred_fetch(deferred_record);
 
     // Step 6. If activateAfter is non-null, then run the following steps in parallel:
-    global.schedule_timer(TimerEventRequest {
+    let timer_id = global.schedule_timer(TimerEventRequest {
         callback: Box::new(move || {
             // Step 6.2. Process deferredRecord.
             let global = trusted_global.root();
             let mut fetch_group = global.fetch_group_mut();
             let deferred_fetch_record =
                 fetch_group.deferred_fetch_record_for_id(&deferred_fetch_record_id);
+            deferred_fetch_record.timer_id.set(None);
             fetch_group.process_a_deferred_fetch(&global, &deferred_fetch_record);
 
             // Last step of https://fetch.spec.whatwg.org/#process-a-deferred-fetch
@@ -473,6 +478,11 @@ fn queue_deferred_fetch(
         // Step 6.1. The user agent should wait until any of the following conditions is met:
         duration: Duration::from_millis(*activate_after as u64),
     });
+    global
+        .fetch_group()
+        .deferred_fetch_record_for_id(&deferred_fetch_record_id)
+        .timer_id
+        .set(timer_id);
     // Step 7. Return deferredRecord.
     deferred_fetch_record_id
 }
@@ -576,6 +586,8 @@ pub(crate) struct DeferredFetchRecord {
     /// <https://fetch.spec.whatwg.org/#deferred-fetch-record-invoke-state>
     pub(crate) invoke_state: Cell<DeferredFetchRecordInvokeState>,
     activated: Cell<bool>,
+    #[ignore_malloc_size_of = "Defined in timers"]
+    timer_id: Cell<Option<TimerId>>,
 }
 
 impl DeferredFetchRecord {

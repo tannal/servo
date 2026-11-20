@@ -12,12 +12,12 @@
 
 #![cfg_attr(crown, allow(crown::jscontext_first_arg))]
 
-use std::cell::{self, Cell, RefMut};
+use std::cell::{self, Cell};
 use std::cmp::max;
 use std::collections::hash_map;
 use std::rc::Rc;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicIsize, Ordering};
+use std::sync::{Arc, Mutex};
 use std::thread;
 
 use crossbeam_channel::{Receiver, SendError, Sender, unbounded};
@@ -30,8 +30,7 @@ use malloc_size_of::malloc_size_of_is_0;
 use net_traits::policy_container::PolicyContainer;
 use net_traits::request::{Destination, Origin, PreloadedResources, RequestClient};
 use rustc_hash::FxHashMap;
-use script_bindings::cell::DomRefCell;
-use script_bindings::reflector::{Reflector, reflect_dom_object};
+use script_bindings::reflector::{Reflector, reflect_weak_referenceable_dom_object};
 use servo_base::id::PipelineId;
 use servo_url::{ImmutableOrigin, ServoUrl};
 use style::thread_state::{self, ThreadState};
@@ -50,6 +49,7 @@ use crate::dom::bindings::root::{Dom, DomRoot};
 use crate::dom::bindings::str::USVString;
 use crate::dom::bindings::trace::{JSTraceable, RootedTraceableBox};
 use crate::dom::globalscope::GlobalScope;
+use crate::dom::globalscope::lifecycle::LifecycleObserver;
 use crate::dom::promise::Promise;
 use crate::dom::window::Window;
 use crate::dom::workletglobalscope::{
@@ -87,7 +87,7 @@ struct DroppableField {
 impl Drop for DroppableField {
     fn drop(&mut self) {
         let worklet_id = self.worklet_id;
-        if self.is_thread_pool_initialized.get() {
+        if self.is_thread_pool_initialized.replace(false) {
             self.thread_pool.exit_worklet(worklet_id);
         }
     }
@@ -127,20 +127,36 @@ impl Worklet {
         thread_pool_constructor: Box<dyn FnOnce() -> Rc<dyn WorkletThreadPool>>,
     ) -> DomRoot<Worklet> {
         debug!("Creating worklet {:?}.", global_type);
-        reflect_dom_object(
+        let worklet = reflect_weak_referenceable_dom_object(
             cx,
-            Box::new(Worklet::new_inherited(
+            Rc::new(Worklet::new_inherited(
                 window,
                 global_type,
                 thread_pool_constructor,
             )),
             window,
-        )
+        );
+        window
+            .upcast::<GlobalScope>()
+            .track_lifecycle_observer(&*worklet);
+        worklet
     }
 
     pub(crate) fn worklet_thread_pool(&self) -> Rc<dyn WorkletThreadPool> {
         self.droppable_field.is_thread_pool_initialized.set(true);
         self.droppable_field.thread_pool.clone()
+    }
+
+    fn exit(&self) {
+        if self
+            .droppable_field
+            .is_thread_pool_initialized
+            .replace(false)
+        {
+            self.droppable_field
+                .thread_pool
+                .exit_worklet(self.droppable_field.worklet_id);
+        }
     }
 
     #[cfg(feature = "testbinding")]
@@ -151,6 +167,12 @@ impl Worklet {
     #[expect(dead_code)]
     pub(crate) fn worklet_global_scope_type(&self) -> WorkletGlobalScopeType {
         self.global_type
+    }
+}
+
+impl LifecycleObserver for Worklet {
+    fn on_tear_down(&self) {
+        self.exit();
     }
 }
 
@@ -181,6 +203,7 @@ impl WorkletMethods<crate::DomTypeHolder> for Worklet {
         let global_scope = self.window.as_global_scope();
 
         let pending_tasks_struct = PendingTasksStruct::new();
+        let shared_promise = global_scope.register_shared_lifecycle(TrustedPromise::from(&promise));
 
         // NOTE: The following steps are split between `WorkletThread::get_worklet_global_scope` and `WorkledThread::fetch_and_invoke_a_worklet_script` methods:
         // Step 5. Let workletInstance be this.
@@ -206,7 +229,7 @@ impl WorkletMethods<crate::DomTypeHolder> for Worklet {
                 global_scope.policy_container(),
                 options.credentials,
                 pending_tasks_struct,
-                &promise,
+                shared_promise,
                 global_scope.inherited_secure_context(),
             );
 
@@ -266,7 +289,7 @@ pub trait WorkletThreadPool: JSTraceable {
         policy_container: Arc<PolicyContainer>,
         credentials: RequestCredentials,
         pending_tasks_struct: PendingTasksStruct,
-        promise: &RootedPromise,
+        promise: Arc<Mutex<Option<TrustedPromise>>>,
         inherited_secure_context: Option<bool>,
     );
     /// Request that the [`WorkletGlobalScope`] associated with the [`WorkletId`]
@@ -399,7 +422,7 @@ impl WorkletThreadPool for StatelessWorkletThreadPool {
         policy_container: Arc<PolicyContainer>,
         credentials: RequestCredentials,
         pending_tasks_struct: PendingTasksStruct,
-        promise: &RootedPromise,
+        promise: Arc<Mutex<Option<TrustedPromise>>>,
         inherited_secure_context: Option<bool>,
     ) {
         // Send each thread a control message asking it to load the script.
@@ -418,7 +441,7 @@ impl WorkletThreadPool for StatelessWorkletThreadPool {
                 policy_container: policy_container.clone(),
                 credentials,
                 pending_tasks_struct: pending_tasks_struct.clone(),
-                promise: TrustedPromise::from(promise),
+                promise: promise.clone(),
                 inherited_secure_context,
             });
         }
@@ -475,7 +498,7 @@ pub(crate) enum WorkletControl {
         policy_container: Arc<PolicyContainer>,
         credentials: RequestCredentials,
         pending_tasks_struct: PendingTasksStruct,
-        promise: TrustedPromise,
+        promise: Arc<Mutex<Option<TrustedPromise>>>,
         inherited_secure_context: Option<bool>,
     },
     Common(WorkletId, CommonScriptMsg),
@@ -759,7 +782,7 @@ impl WorkletThread {
         policy_container: Arc<PolicyContainer>,
         credentials: RequestCredentials,
         pending_tasks_struct: PendingTasksStruct,
-        promise: TrustedPromise,
+        promise: Arc<Mutex<Option<TrustedPromise>>>,
         cx: &mut JSContext,
     ) {
         debug!("Fetching from {}.", script_url);
@@ -784,9 +807,6 @@ impl WorkletThread {
         // NOTE: We do not perform the Step 2 because Worklet currently does not implement a `module responses map`
         // <https://html.spec.whatwg.org/multipage/#concept-worklet-module-responses-map>
 
-        // `fetch_a_module_script_graph` requires the `on_complete` closure to be cloneable
-        // therefore, we wrap the TrustedPromise in an Rc to make it cloneable and RefCell allows calling `reject_task` and `resolve_task`
-        let promise_task = Rc::new(DomRefCell::new(Some(promise)));
         let script_thread_sender = self.global_init.to_script_thread_sender.clone();
         let rooted_global = DomRoot::from_ref(global);
         let script_url = ensure_blob_referenced_by_url_is_kept_alive(global, script_url);
@@ -814,7 +834,7 @@ impl WorkletThread {
 
                         reject_promise(
                             &pending_tasks_struct,
-                            promise_task.safe_borrow_mut(cx.no_gc()),
+                            &promise,
                             script_thread_sender.clone(),
                         );
                     },
@@ -830,7 +850,7 @@ impl WorkletThread {
                             // Step 6.4.2.1. and its substeps are handled by `reject_promise` function
                             reject_promise(
                                 &pending_tasks_struct,
-                                promise_task.safe_borrow_mut(cx.no_gc()),
+                                &promise,
                                 script_thread_sender.clone(),
                             );
 
@@ -851,15 +871,16 @@ impl WorkletThread {
                             debug!("Resolving promise.");
 
                             let msg = MainThreadScriptMsg::WorkletLoaded(pipeline_id);
-                            script_thread_sender
-                                .send(msg)
-                                .expect("Worklet thread outlived script thread.");
+                            let _ = script_thread_sender.send(msg);
 
-                            let task = promise_task
-                                .safe_borrow_mut(cx.no_gc())
+                            let Some(promise) = promise
+                                .lock()
+                                .expect("Worklet promise lock poisoned")
                                 .take()
-                                .expect("promise_task must be consumed exactly once")
-                                .resolve_task(());
+                            else {
+                                return;
+                            };
+                            let task = promise.resolve_task(());
 
                             let msg = CommonScriptMsg::Task(
                                 ScriptThreadEventCategory::WorkletEvent,
@@ -870,9 +891,7 @@ impl WorkletThread {
 
                             // Step 6.4.5. Queue a global task on the networking task source given workletInstance's relevant global object to perform the following steps:
                             let msg = MainThreadScriptMsg::Common(msg);
-                            script_thread_sender
-                                .send(msg)
-                                .expect("Worklet thread outlived script thread.");
+                            let _ = script_thread_sender.send(msg);
                         }
                     },
                 }
@@ -958,7 +977,7 @@ impl WorkletThread {
 /// <https://html.spec.whatwg.org/multipage/#dom-worklet-addmodule>
 pub(crate) fn reject_promise(
     pending_tasks_struct: &PendingTasksStruct,
-    mut promise_task: RefMut<'_, Option<TrustedPromise>>,
+    promise: &Arc<Mutex<Option<TrustedPromise>>>,
     script_thread_sender: Sender<MainThreadScriptMsg>,
 ) {
     // Step 6.4.1.1.1.1. Set pendingTasks to −1
@@ -967,10 +986,14 @@ pub(crate) fn reject_promise(
     // 6.4.1.1.1. If pendingTasks is not −1:
     if old_counter > 0 {
         // 6.4.1.1.1.2. Reject promise with an "AbortError" DOMException
-        let task = promise_task
+        let Some(promise) = promise
+            .lock()
+            .expect("Worklet promise lock poisoned")
             .take()
-            .expect("promise_task must be consumed exactly once")
-            .reject_task(Error::Abort(None));
+        else {
+            return;
+        };
+        let task = promise.reject_task(Error::Abort(None));
 
         let msg = CommonScriptMsg::Task(
             ScriptThreadEventCategory::WorkletEvent,
@@ -981,9 +1004,7 @@ pub(crate) fn reject_promise(
 
         // Step 6.4.1.1. Queue a global task on the networking task source given workletInstance's relevant global object to perform the following steps:
         let msg = MainThreadScriptMsg::Common(msg);
-        script_thread_sender
-            .send(msg)
-            .expect("Worklet thread outlived script thread.");
+        let _ = script_thread_sender.send(msg);
     }
 }
 

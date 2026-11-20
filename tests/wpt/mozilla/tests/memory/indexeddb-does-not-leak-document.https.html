@@ -1,0 +1,47 @@
+<!DOCTYPE html>
+<title>Document objects for added and removed iframes that use IndexedDB are collected</title>
+<script src="/resources/testharness.js"></script>
+<script src="/resources/testharnessreport.js"></script>
+<body>
+    <script>
+      async function createAndDestroySameOriginIframe(runFn) {
+        const iframe = document.createElement("iframe");
+        iframe.src = "/common/blank.html";
+        document.body.appendChild(iframe);
+        await new Promise((resolve) => { iframe.onload = resolve; });
+
+        await runFn(iframe.contentWindow);
+        await new Promise((resolve) => step_timeout(resolve, 100));
+
+        const weakDocument = new WeakRef(iframe.contentDocument);
+        iframe.remove();
+
+        await TestUtils.gc();
+        await TestUtils.gc();
+
+        return weakDocument.deref() === undefined;
+      }
+
+      promise_test(async () => {
+        assert_true(await createAndDestroySameOriginIframe((win) => {
+          win.indexedDB.open("leak-test-db");
+        }));
+      }, "indexedDB.open() in-flight does not leak the document");
+
+      promise_test(async () => {
+        assert_true(await createAndDestroySameOriginIframe(async (win) => {
+          await new Promise((resolve, reject) => {
+            const req = win.indexedDB.open("leak-test-db-2");
+            req.onsuccess = resolve;
+            req.onerror = () => reject(req.error);
+          });
+        }));
+      }, "indexedDB.open() completed connection does not leak the document");
+
+      promise_test(async () => {
+        assert_true(await createAndDestroySameOriginIframe((win) => {
+          win.indexedDB.databases();
+        }));
+      }, "indexedDB.databases() does not leak the document");
+    </script>
+</body>

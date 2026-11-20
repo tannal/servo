@@ -57,7 +57,7 @@ impl js::gc::Rootable for OnRejectedHandler {}
 
 impl Callback for OnRejectedHandler {
     fn callback(&self, cx: &mut CurrentRealm, v: Handle<JSVal>) {
-        // a. Perform ! Call(promiseCapability.[[Reject]], undefined, « reason »).
+        // a. Perform ! Call(promiseCapability.[[Reject]], undefined, « reason »).
         self.promise.reject(cx, v);
     }
 }
@@ -79,7 +79,7 @@ pub(crate) struct LoadState {
 
 const LOAD_REACTION_HOST_DEFINED_SLOT: usize = 0;
 
-fn take_state_from_reserved_slot(cx: &mut JSContext, args: &CallArgs) -> Box<LoadState> {
+fn take_state_from_reserved_slot(cx: &mut CurrentRealm, args: &CallArgs) -> Option<Box<LoadState>> {
     rooted!(&in(cx) let host_defined = unsafe { *GetFunctionNativeReserved(args.callee(), LOAD_REACTION_HOST_DEFINED_SLOT) });
     unsafe {
         SetFunctionNativeReserved(
@@ -88,8 +88,12 @@ fn take_state_from_reserved_slot(cx: &mut JSContext, args: &CallArgs) -> Box<Loa
             &UndefinedValue(),
         )
     };
-    assert!(!host_defined.get().is_undefined());
-    unsafe { Box::from_raw((*host_defined).to_private() as *mut LoadState) }
+    if host_defined.get().is_undefined() {
+        return None;
+    }
+    let id = host_defined.get().to_private() as usize;
+    let global = GlobalScope::from_current_realm(cx);
+    global.remove_pending_module_load(id)
 }
 
 unsafe extern "C" fn on_load_requested_modules_resolved(
@@ -104,7 +108,9 @@ unsafe extern "C" fn on_load_requested_modules_resolved(
 
     let args = unsafe { CallArgs::from_vp(vp, argc) };
 
-    let state = take_state_from_reserved_slot(cx, &args);
+    let Some(state) = take_state_from_reserved_slot(cx, &args) else {
+        return true;
+    };
 
     let on_complete = state.on_complete.safe_borrow_mut(cx).take().unwrap();
     let module_script = state.module_script.safe_borrow_mut(cx).take().unwrap();
@@ -141,7 +147,9 @@ unsafe extern "C" fn on_load_requested_modules_rejected(
 
     let args = unsafe { CallArgs::from_vp(vp, argc) };
 
-    let state = take_state_from_reserved_slot(cx, &args);
+    let Some(state) = take_state_from_reserved_slot(cx, &args) else {
+        return true;
+    };
 
     let error = unsafe { Handle::from_raw(args.get(0)) };
 
@@ -170,19 +178,14 @@ struct ImportRequest {
     payload: RootedTraceableBox<Heap<JSVal>>,
 }
 
-fn load_state_from_handle_value<'a>(reference_private: Handle<'a, JSVal>) -> Option<&'a LoadState> {
-    if reference_private.get().is_undefined() {
-        return None;
-    }
-    unsafe { (reference_private.get().to_private() as *const LoadState).as_ref() }
-}
-
 pub(crate) fn load_requested_modules(
     cx: &mut CurrentRealm,
     module: Handle<*mut JSObject>,
     load_state: Box<LoadState>,
 ) {
-    rooted!(&in(cx) let host_defined = PrivateValue(Box::into_raw(load_state) as *const _ as *const c_void));
+    let global = GlobalScope::from_current_realm(cx);
+    let load_id = global.insert_pending_module_load(load_state);
+    rooted!(&in(cx) let host_defined = PrivateValue(load_id as *const c_void));
 
     unsafe {
         rooted!(&in(cx) let on_resolved = NewFunctionWithReserved(
@@ -383,7 +386,8 @@ pub(crate) fn host_load_imported_module(
     let mut realm = CurrentRealm::assert(cx);
     let mut global_scope = GlobalScope::from_current_realm(&mut realm);
 
-    let load_state = load_state_from_handle_value(host_defined);
+    let load_id =
+        (!host_defined.get().is_undefined()).then(|| host_defined.get().to_private() as usize);
 
     // TODO Step 2. If settingsObject's global object implements WorkletGlobalScope or ServiceWorkerGlobalScope and loadState is undefined, then:
 
@@ -472,19 +476,23 @@ pub(crate) fn host_load_imported_module(
 
     // Step 13. If loadState is not undefined, then:
     // Note: loadState is undefined only in dynamic imports
-    let (destination, fetch_client) = match load_state {
+    let (destination, fetch_client, is_dynamic_import) = match load_id.and_then(|id| {
+        global_scope.with_pending_module_load(id, |state| {
+            state.map(|load_state| (load_state.destination, load_state.fetch_client.clone()))
+        })
+    }) {
         // Step 13.1. Set destination to loadState.[[Destination]].
         // Step 13.2. Set fetchClient to loadState.[[FetchClient]].
-        Some(load_state) => (load_state.destination, load_state.fetch_client.clone()),
+        Some((destination, fetch_client)) => (destination, fetch_client, false),
+        None if load_id.is_some() => return,
         None => (
             // Step 11. Let destination be "script".
             Destination::Script,
             // Step 12. Let fetchClient be settingsObject.
             global_scope.request_client(Some(cx.no_gc())),
+            true,
         ),
     };
-
-    let is_dynamic_import = load_state.is_none();
     let request = ImportRequest {
         referrer: RootedTraceableBox::from_box(Heap::boxed(*referrer.as_ref(cx))),
         module_request: RootedTraceableBox::from_box(Heap::boxed(*module_request.as_ref(cx))),

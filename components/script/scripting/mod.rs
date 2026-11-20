@@ -4,6 +4,6 @@
 
 pub(crate) mod fetching_options;
 pub(crate) mod import_map;
-mod module_loading;
+pub(crate) mod module_loading;
 pub(crate) mod script_execution;
 pub(crate) mod script_module;

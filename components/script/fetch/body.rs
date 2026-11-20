@@ -4,6 +4,7 @@
 
 use std::io::Cursor;
 use std::rc::Rc;
+use std::sync::{Arc, Mutex};
 use std::{fs, ptr, str};
 
 use encoding_rs::{Encoding, UTF_8};
@@ -100,7 +101,7 @@ enum SendableBody {
         done: bool,
     },
     Stream {
-        stream: Trusted<ReadableStream>,
+        stream: Arc<Mutex<Option<Trusted<ReadableStream>>>>,
         task_source: SendableTaskSource,
         source: BodySource,
     },
@@ -202,6 +203,9 @@ impl TransmitBodyConnectHandler {
         {
             let stream = stream.clone();
             task_source.queue(task!(start_reading_request_body_stream: move |cx| {
+                let Some(stream) = stream.lock().unwrap().as_ref().cloned() else {
+                    return;
+                };
                 // Step 1, Let body be request’s body.
                 let rooted_stream = stream.root();
 
@@ -252,7 +256,10 @@ impl TransmitBodyConnectHandler {
             } => {
                 let stream = stream.clone();
                 task_source.queue(task!(setup_native_body_promise_handler: move |cx| {
-                    let rooted_stream = stream.root();
+                    let Some(trusted_stream) = stream.lock().unwrap().as_ref().cloned() else {
+                        return;
+                    };
+                    let rooted_stream = trusted_stream.root();
                     let global = rooted_stream.global();
 
                     // Step 4, the result of reading a chunk from body’s stream with reader.
@@ -264,12 +271,14 @@ impl TransmitBodyConnectHandler {
                     rooted!(&in(cx) let mut promise_handler = Some(TransmitBodyPromiseHandler {
                         bytes_sender: bytes_sender.clone(),
                         stream: Dom::from_ref(&rooted_stream),
+                        shared_stream: stream.clone(),
                     }));
 
                     rooted!(&in(cx) let mut rejection_handler =
                         Some(TransmitBodyPromiseRejectionHandler {
                             bytes_sender,
                             stream: Dom::from_ref(&rooted_stream),
+                            shared_stream: stream,
                         })
                     );
 
@@ -297,6 +306,9 @@ struct TransmitBodyPromiseHandler {
     #[no_trace]
     bytes_sender: IpcSender<BodyChunkResponse>,
     stream: Dom<ReadableStream>,
+    #[ignore_malloc_size_of = "Arc"]
+    #[no_trace]
+    shared_stream: Arc<Mutex<Option<Trusted<ReadableStream>>>>,
 }
 
 impl js::gc::Rootable for TransmitBodyPromiseHandler {}
@@ -309,6 +321,7 @@ impl Callback for TransmitBodyPromiseHandler {
             Err(_) => {
                 // Step 5.5, the "otherwise" steps.
                 // TODO: terminate fetch.
+                let _ = self.shared_stream.lock().unwrap().take();
                 let _ = self.bytes_sender.send(BodyChunkResponse::Done);
                 return self.stream.stop_reading(cx);
             },
@@ -317,6 +330,7 @@ impl Callback for TransmitBodyPromiseHandler {
         if is_done {
             // Step 5.3, the "done" steps.
             // TODO: queue a fetch task on request to process request end-of-body.
+            let _ = self.shared_stream.lock().unwrap().take();
             let _ = self.bytes_sender.send(BodyChunkResponse::Done);
             return self.stream.stop_reading(cx);
         }
@@ -325,6 +339,7 @@ impl Callback for TransmitBodyPromiseHandler {
             Ok(chunk) => chunk,
             Err(_) => {
                 // Step 5.5, the "otherwise" steps.
+                let _ = self.shared_stream.lock().unwrap().take();
                 let _ = self.bytes_sender.send(BodyChunkResponse::Error);
                 return self.stream.stop_reading(cx);
             },
@@ -349,6 +364,9 @@ struct TransmitBodyPromiseRejectionHandler {
     #[no_trace]
     bytes_sender: IpcSender<BodyChunkResponse>,
     stream: Dom<ReadableStream>,
+    #[ignore_malloc_size_of = "Arc"]
+    #[no_trace]
+    shared_stream: Arc<Mutex<Option<Trusted<ReadableStream>>>>,
 }
 
 impl js::gc::Rootable for TransmitBodyPromiseRejectionHandler {}
@@ -357,6 +375,7 @@ impl Callback for TransmitBodyPromiseRejectionHandler {
     /// <https://fetch.spec.whatwg.org/#concept-request-transmit-body>
     fn callback(&self, cx: &mut CurrentRealm, _v: HandleValue) {
         // Step 5.4, the "rejection" steps.
+        let _ = self.shared_stream.lock().unwrap().take();
         let _ = self.bytes_sender.send(BodyChunkResponse::Error);
         self.stream.stop_reading(cx);
     }
@@ -423,7 +442,7 @@ impl ExtractedBody {
                 let task_manager = global.task_manager();
                 let task_source = task_manager.networking_task_source().into();
                 SendableBody::Stream {
-                    stream: Trusted::new(&*stream),
+                    stream: global.register_shared_lifecycle(Trusted::new(&*stream)),
                     task_source,
                     source,
                 }

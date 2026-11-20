@@ -4,6 +4,7 @@
 
 use std::any::Any;
 use std::cell::Cell;
+use std::sync::{Arc, Mutex};
 
 use js::jsapi::JSTracer;
 use malloc_size_of::{MallocShallowSizeOf, MallocSizeOf, MallocSizeOfOps};
@@ -40,6 +41,23 @@ impl<T: WeakReferenceable + LifecycleObserver + 'static> ErasedLifecycleEntry
         if let Some(observer) = self.0.root() {
             observer.on_tear_down();
         }
+    }
+
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+}
+
+#[cfg_attr(crown, crown::unrooted_must_root_lint::allow_unrooted_interior)]
+struct SharedSlotEntry<T>(Arc<Mutex<Option<T>>>);
+
+impl<T: 'static> ErasedLifecycleEntry for SharedSlotEntry<T> {
+    fn is_alive(&self) -> bool {
+        self.0.lock().unwrap().is_some()
+    }
+
+    fn tear_down(&self) {
+        let _ = self.0.lock().unwrap().take();
     }
 
     fn as_any(&self) -> &dyn Any {
@@ -84,6 +102,24 @@ impl LifecycleRegistry {
             observers.retain(|entry| entry.is_alive());
         }
         observers.push(Box::new(WeakDomObserver(WeakRef::new(observer))));
+    }
+
+    /// Wrap a handle (such as `Trusted<T>` or `TrustedPromise`) in a shared slot that is
+    /// automatically cleared synchronously on the script thread when this `GlobalScope`
+    /// tears down, or pruned on GC if already taken by a one-shot callback.
+    pub(crate) fn register_shared<T: 'static>(&self, value: T) -> Arc<Mutex<Option<T>>> {
+        if self.torn_down.get() {
+            drop(value);
+            return Arc::new(Mutex::new(None));
+        }
+
+        let shared = Arc::new(Mutex::new(Some(value)));
+        let mut observers = self.observers.borrow_mut();
+        if observers.len() == observers.capacity() {
+            observers.retain(|entry| entry.is_alive());
+        }
+        observers.push(Box::new(SharedSlotEntry(shared.clone())));
+        shared
     }
 
     /// Visit all currently live observers of concrete DOM type `T`.

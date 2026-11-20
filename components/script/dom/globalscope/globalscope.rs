@@ -10,8 +10,8 @@ use std::ffi::CStr;
 use std::mem;
 use std::ops::{Deref, Index};
 use std::rc::Rc;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
@@ -158,6 +158,7 @@ use crate::runtime::job_queue::MicrotaskRunnable;
 use crate::runtime::script_runtime::ThreadSafeJSContext;
 use crate::scripting::fetching_options::ScriptFetchOptions;
 use crate::scripting::import_map::ImportMap;
+use crate::scripting::module_loading::LoadState;
 use crate::scripting::script_execution::{
     ScriptOptions, fill_compile_options, maybe_associate_with_script,
 };
@@ -254,6 +255,14 @@ pub(crate) struct GlobalScope {
     /// Registry of active lifecycle observers notified when this global scope tears down.
     lifecycle_registry: LifecycleRegistry,
 
+    /// Next identifier for an in-flight module graph load (`LoadState`).
+    next_module_load_id: Cell<usize>,
+
+    /// In-flight module graph loads owned by this global scope so they are traced by GC
+    /// and dropped on `tear_down` if a descendant module fetch never settles.
+    #[allow(clippy::vec_box)]
+    pending_module_loads: DomRefCell<HashMapTracedValues<usize, Box<LoadState>, FxBuildHasher>>,
+
     /// Dependent AbortSignals that must be kept alive per
     /// <https://dom.spec.whatwg.org/#abort-signal-garbage-collection?
     abort_signal_dependents: DomRefCell<FxHashSet<Dom<AbortSignal>>>,
@@ -345,6 +354,7 @@ impl GlobalScope {
     pub(crate) fn tear_down(&self) {
         self.fetch_group_mut().terminate(self);
         self.lifecycle_registry.tear_down();
+        self.pending_module_loads.borrow_mut().0.clear();
         self.with_module_map(|module_map| std::mem::take(&mut *module_map.borrow_mut()));
     }
 
@@ -431,6 +441,8 @@ impl GlobalScope {
             permission_state_invocation_results: Default::default(),
             list_auto_close_worker: Default::default(),
             lifecycle_registry: LifecycleRegistry::new(),
+            next_module_load_id: Cell::new(0),
+            pending_module_loads: DomRefCell::new(HashMapTracedValues::new_fx()),
             abort_signal_dependents: Default::default(),
             uncaught_rejections: Default::default(),
             consumed_rejections: Default::default(),
@@ -2004,6 +2016,30 @@ impl GlobalScope {
         self.lifecycle_registry.register(observer);
     }
 
+    pub(crate) fn register_shared_lifecycle<T: 'static>(&self, value: T) -> Arc<Mutex<Option<T>>> {
+        self.lifecycle_registry.register_shared(value)
+    }
+
+    pub(crate) fn insert_pending_module_load(&self, state: Box<LoadState>) -> usize {
+        let id = self.next_module_load_id.get();
+        self.next_module_load_id.set(id.wrapping_add(1));
+        self.pending_module_loads.borrow_mut().insert(id, state);
+        id
+    }
+
+    pub(crate) fn remove_pending_module_load(&self, id: usize) -> Option<Box<LoadState>> {
+        self.pending_module_loads.borrow_mut().remove(&id)
+    }
+
+    pub(crate) fn with_pending_module_load<R>(
+        &self,
+        id: usize,
+        f: impl FnOnce(Option<&LoadState>) -> R,
+    ) -> R {
+        let loads = self.pending_module_loads.borrow();
+        f(loads.get(&id).map(|boxed| &**boxed))
+    }
+
     pub(crate) fn close_event_sources(&self) -> bool {
         let mut canceled_any_fetch = false;
         self.lifecycle_registry
@@ -2284,6 +2320,17 @@ impl GlobalScope {
         match self.downcast::<WorkerGlobalScope>() {
             Some(worker_global) => Some(worker_global.timer_scheduler().schedule_timer(request)),
             _ => with_script_thread(|script_thread| Some(script_thread.schedule_timer(request))),
+        }
+    }
+
+    pub(crate) fn cancel_timer(&self, timer_id: TimerId) {
+        match self.downcast::<WorkerGlobalScope>() {
+            Some(worker_global) => worker_global.timer_scheduler().cancel_timer(timer_id),
+            _ => {
+                with_script_thread(|script_thread| {
+                    script_thread.cancel_timer(timer_id);
+                });
+            },
         }
     }
 

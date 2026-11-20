@@ -4,6 +4,7 @@
 
 use std::collections::VecDeque;
 use std::default::Default;
+use std::rc::Rc;
 
 use dom_struct::dom_struct;
 use js::context::JSContext;
@@ -11,7 +12,7 @@ use js::jsval::UndefinedValue;
 use js::realm::CurrentRealm;
 use script_bindings::cell::DomRefCell;
 use script_bindings::inheritance::Castable;
-use script_bindings::reflector::reflect_dom_object;
+use script_bindings::reflector::reflect_weak_referenceable_dom_object;
 use servo_base::generic_channel::GenericCallback;
 use servo_constellation_traits::{
     Job, JobError, JobResult, JobResultValue, JobType, ScriptToConstellationMessage,
@@ -30,6 +31,7 @@ use crate::dom::bindings::str::USVString;
 use crate::dom::bindings::structuredclone;
 use crate::dom::eventtarget::EventTarget;
 use crate::dom::globalscope::GlobalScope;
+use crate::dom::globalscope::lifecycle::LifecycleObserver;
 use crate::dom::promise::Promise;
 use crate::dom::serviceworker::ServiceWorker;
 use crate::dom::serviceworkerregistration::ServiceWorkerRegistration;
@@ -62,11 +64,13 @@ impl ServiceWorkerContainer {
     }
 
     pub(crate) fn new(cx: &mut JSContext, global: &GlobalScope) -> DomRoot<ServiceWorkerContainer> {
-        reflect_dom_object(
+        let container = reflect_weak_referenceable_dom_object(
             cx,
-            Box::new(ServiceWorkerContainer::new_inherited()),
+            Rc::new(ServiceWorkerContainer::new_inherited()),
             global,
-        )
+        );
+        global.track_lifecycle_observer(&*container);
+        container
     }
 
     /// <https://w3c.github.io/ServiceWorker/#reject-job-promise>
@@ -245,14 +249,20 @@ impl ServiceWorkerContainer {
         }
 
         let global = self.global();
-        let response_listener = Trusted::new(self);
+        let response_listener = global.register_shared_lifecycle(Trusted::new(self));
 
         let task_source = global
             .task_manager()
             .dom_manipulation_task_source()
             .to_sendable();
         let callback = GenericCallback::new(move |message| {
-            let response_listener = response_listener.clone();
+            let Some(response_listener) = response_listener
+                .lock()
+                .expect("ServiceWorkerContainer response listener lock poisoned")
+                .clone()
+            else {
+                return;
+            };
             let response = match message {
                 Ok(inner) => inner,
                 Err(err) => {
@@ -320,6 +330,13 @@ impl ServiceWorkerContainer {
                 ServiceWorkerAlgorithmResult::Job(JobResult::RejectPromise(JobError::TypeError)),
             );
         }
+    }
+}
+
+impl LifecycleObserver for ServiceWorkerContainer {
+    fn on_tear_down(&self) {
+        *self.callback.borrow_mut() = None;
+        self.pending_algorithm_results.borrow_mut().clear();
     }
 }
 

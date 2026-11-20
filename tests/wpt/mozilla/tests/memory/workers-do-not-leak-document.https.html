@@ -25,5 +25,16 @@
             assert_true(await createAndDestroyIframeWithHTML(test, "executing"));
           }, `'${name}' does not leak the document`);
       }
+
+      promise_test(async () => {
+        const url = "data:application/javascript,onconnect = (e) => e.ports[0].postMessage('executing')";
+        const parentWorker = new SharedWorker(url, "shared-worker-other-owner");
+        await new Promise((resolve) => {
+          parentWorker.port.onmessage = () => resolve();
+        });
+
+        const html = `<script>w = new SharedWorker(${JSON.stringify(url)}, "shared-worker-other-owner"); w.port.onmessage = (e) => window.parent.postMessage(e.data); <\/script>`;
+        assert_true(await createAndDestroyIframeWithHTML(html, "executing"));
+      }, "'shared-worker-other-owner' does not leak the document");
     </script>
 </body>

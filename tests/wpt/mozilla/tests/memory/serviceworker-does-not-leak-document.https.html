@@ -1,0 +1,44 @@
+<!DOCTYPE html>
+<title>Document objects for added and removed iframes that use CacheStorage or ServiceWorker are collected</title>
+<script src="/resources/testharness.js"></script>
+<script src="/resources/testharnessreport.js"></script>
+<body>
+    <script>
+      async function createAndDestroySameOriginIframe(runFn) {
+        const iframe = document.createElement("iframe");
+        iframe.src = "/common/blank.html";
+        document.body.appendChild(iframe);
+        await new Promise((resolve) => { iframe.onload = resolve; });
+
+        await runFn(iframe.contentWindow);
+        await new Promise((resolve) => step_timeout(resolve, 100));
+
+        const weakDocument = new WeakRef(iframe.contentDocument);
+        iframe.remove();
+
+        await TestUtils.gc();
+        await TestUtils.gc();
+
+        return weakDocument.deref() === undefined;
+      }
+
+      promise_test(async () => {
+        assert_true(await createAndDestroySameOriginIframe((win) => {
+          win.caches.open("leak-test-cache");
+        }));
+      }, "caches.open() in-flight does not leak the document");
+
+      promise_test(async () => {
+        assert_true(await createAndDestroySameOriginIframe(async (win) => {
+          const cache = await win.caches.open("leak-test-cache-2");
+          await cache.keys();
+        }));
+      }, "caches.open() and cache.keys() do not leak the document");
+
+      promise_test(async () => {
+        assert_true(await createAndDestroySameOriginIframe((win) => {
+          win.navigator.serviceWorker.register("/common/slow.py?delay=60000");
+        }));
+      }, "navigator.serviceWorker.register() in-flight does not leak the document");
+    </script>
+</body>

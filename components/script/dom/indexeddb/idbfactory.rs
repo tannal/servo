@@ -2,6 +2,7 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 use std::collections::HashSet;
+use std::rc::Rc;
 
 use dom_struct::dom_struct;
 use js::context::JSContext;
@@ -10,7 +11,7 @@ use js::rust::HandleValue;
 use profile_traits::generic_callback::GenericCallback;
 use script_bindings::cell::DomRefCell;
 use script_bindings::inheritance::Castable;
-use script_bindings::reflector::{Reflector, reflect_dom_object};
+use script_bindings::reflector::{Reflector, reflect_weak_referenceable_dom_object};
 use servo_base::generic_channel::GenericSend;
 use servo_url::origin::ImmutableOrigin;
 use storage_traits::client_storage::{StorageIdentifier, StorageProxyMap, StorageType};
@@ -32,6 +33,7 @@ use crate::dom::bindings::str::DOMString;
 use crate::dom::bindings::trace::HashMapTracedValues;
 use crate::dom::event::{Event, EventBubbles, EventCancelable};
 use crate::dom::globalscope::GlobalScope;
+use crate::dom::globalscope::lifecycle::LifecycleObserver;
 use crate::dom::indexeddb::idbopendbrequest::IDBOpenDBRequest;
 use crate::dom::indexeddb::key::{convert_value_to_key, map_backend_error_to_dom_error};
 use crate::dom::promise::Promise;
@@ -198,7 +200,10 @@ impl IDBFactory {
     }
 
     pub fn new(cx: &mut JSContext, global: &GlobalScope) -> DomRoot<IDBFactory> {
-        reflect_dom_object(cx, Box::new(IDBFactory::new_inherited()), global)
+        let factory =
+            reflect_weak_referenceable_dom_object(cx, Rc::new(IDBFactory::new_inherited()), global);
+        global.track_lifecycle_observer(&*factory);
+        factory
     }
 
     /// Setup the callback to the backend service, if this hasn't been done already.
@@ -208,14 +213,20 @@ impl IDBFactory {
         }
 
         let global = self.global();
-        let response_listener = Trusted::new(self);
+        let response_listener = global.register_shared_lifecycle(Trusted::new(self));
 
         let task_source = global
             .task_manager()
             .database_access_task_source()
             .to_sendable();
         let callback = GenericCallback::new(move |message| {
-            let response_listener = response_listener.clone();
+            let Some(response_listener) = response_listener
+                .lock()
+                .expect("IDBFactory response listener lock poisoned")
+                .clone()
+            else {
+                return;
+            };
             let response = match message {
                 Ok(inner) => inner,
                 Err(err) => return error!("Error in IndexedDB factory callback {:?}.", err),
@@ -493,8 +504,13 @@ impl IDBFactory {
     }
 
     pub(crate) fn abort_pending_upgrades_and_close_databases(&self) {
+        *self.callback.borrow_mut() = None;
+        self.indexeddb_transactions.borrow_mut().0.clear();
+        let connections = std::mem::take(&mut *self.connections.borrow_mut());
+        if connections.is_empty() {
+            return;
+        }
         let global = self.global();
-        let connections = self.connections.borrow();
         let pending_upgrades = connections
             .iter()
             .map(|(key, val)| {
@@ -553,6 +569,12 @@ impl IDBFactory {
             return Err(Error::Operation(None));
         };
         Ok(proxy_map)
+    }
+}
+
+impl LifecycleObserver for IDBFactory {
+    fn on_tear_down(&self) {
+        self.abort_pending_upgrades_and_close_databases();
     }
 }
 
@@ -654,9 +676,7 @@ impl IDBFactoryMethods<crate::DomTypeHolder> for IDBFactory {
         // Step 3: Let p be a new promise.
         let p = Promise::new(cx, &global);
 
-        // Note: the option is required to pass the promise to a task from within the generic callback,
-        // see #41356
-        let mut trusted_promise: Option<TrustedPromise> = Some(TrustedPromise::from(&p));
+        let trusted_promise = global.register_shared_lifecycle(TrustedPromise::from(&p));
 
         // Step 4: Run these steps in parallel:
         // Note implementing by communicating with the backend.
@@ -666,8 +686,12 @@ impl IDBFactoryMethods<crate::DomTypeHolder> for IDBFactory {
             .to_sendable();
         let callback = GenericCallback::new(move |message| {
             let result: BackendResult<Vec<DatabaseInfo>> = message.unwrap();
-            let Some(trusted_promise) = trusted_promise.take() else {
-                return error!("Callback for `DataBases` called twice.");
+            let Some(trusted_promise) = trusted_promise
+                .lock()
+                .expect("IDBFactory databases promise lock poisoned")
+                .take()
+            else {
+                return;
             };
 
             // Step 4.4: Queue a database task to resolve p with result.

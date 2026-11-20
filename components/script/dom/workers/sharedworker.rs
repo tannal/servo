@@ -4,7 +4,9 @@
 
 #![cfg_attr(crown, allow(crown::jscontext_first_arg))]
 
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::cell::Cell;
+use std::rc::Rc;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Condvar, LazyLock, Mutex};
 
 use crossbeam_channel::{Sender, unbounded};
@@ -16,7 +18,8 @@ use js::rust::HandleObject;
 use malloc_size_of_derive::MallocSizeOf;
 use net_traits::pub_domains::reg_suffix;
 use net_traits::request::{CredentialsMode, Referrer};
-use script_bindings::reflector::reflect_dom_object_with_proto;
+use script_bindings::reflector::reflect_weak_referenceable_dom_object_with_proto;
+#[cfg(feature = "devtools")]
 use servo_base::generic_channel;
 use servo_base::id::WorkerId;
 use servo_constellation_traits::{MessagePortImpl, WorkerScriptLoadOrigin};
@@ -41,6 +44,7 @@ use crate::dom::bindings::trace::CustomTraceable;
 use crate::dom::bindings::transferable::Transferable;
 use crate::dom::eventtarget::EventTarget;
 use crate::dom::globalscope::GlobalScope;
+use crate::dom::globalscope::lifecycle::LifecycleObserver;
 use crate::dom::messageport::MessagePort;
 use crate::dom::sharedworkerglobalscope::{
     SharedWorkerControlMsg, SharedWorkerGlobalScope, SharedWorkerScriptMsg,
@@ -57,6 +61,9 @@ pub(crate) struct SharedWorker {
     eventtarget: EventTarget,
     port: Dom<MessagePort>,
     _control_sender: Sender<SharedWorkerControlMsg>,
+    #[no_trace]
+    registration_id: Cell<Option<Uuid>>,
+    detached: Cell<bool>,
 }
 
 pub(crate) type TrustedSharedWorkerAddress = Trusted<SharedWorker>;
@@ -153,8 +160,9 @@ struct SharedWorkerRegistration {
     extended_lifetime: bool,
     worker_is_secure_context: bool,
     closing: Arc<AtomicBool>,
+    owner_count: Arc<AtomicUsize>,
     sender: Sender<SharedWorkerScriptMsg>,
-    _control_sender: Sender<SharedWorkerControlMsg>,
+    control_sender: Sender<SharedWorkerControlMsg>,
 }
 
 // A user agent has an associated shared worker manager which is the result of starting a new parallel queue.
@@ -330,6 +338,39 @@ impl SharedWorker {
         }
     }
 
+    fn remove_owner(registration_id: Option<Uuid>) {
+        let Some(id) = registration_id else {
+            return;
+        };
+        let (workers, ready) = &*SHARED_WORKERS;
+        let mut workers = workers.lock().expect("SharedWorker registry poisoned");
+        let Some(index) = workers.iter().position(|entry| {
+            matches!(&entry.state, SharedWorkerRegistryState::Created(worker) if worker.id == id)
+        }) else {
+            return;
+        };
+
+        let should_terminate = match &workers[index].state {
+            SharedWorkerRegistryState::Created(worker) => {
+                let prev = worker.owner_count.fetch_sub(1, Ordering::SeqCst);
+                if prev <= 1 && !worker.extended_lifetime {
+                    worker.closing.store(true, Ordering::SeqCst);
+                    let _ = worker.control_sender.send(SharedWorkerControlMsg::Exit);
+                    let _ = worker.sender.send(SharedWorkerScriptMsg::WakeUp);
+                    true
+                } else {
+                    false
+                }
+            },
+            _ => false,
+        };
+
+        if should_terminate {
+            workers.remove(index);
+            ready.notify_all();
+        }
+    }
+
     fn new_inherited(
         port: &MessagePort,
         control_sender: Sender<SharedWorkerControlMsg>,
@@ -338,6 +379,8 @@ impl SharedWorker {
             eventtarget: EventTarget::new_inherited(),
             port: Dom::from_ref(port),
             _control_sender: control_sender,
+            registration_id: Cell::new(None),
+            detached: Cell::new(false),
         }
     }
 
@@ -348,12 +391,14 @@ impl SharedWorker {
         control_sender: Sender<SharedWorkerControlMsg>,
         cx: &mut js::context::JSContext,
     ) -> DomRoot<SharedWorker> {
-        reflect_dom_object_with_proto(
+        let worker = reflect_weak_referenceable_dom_object_with_proto(
             cx,
-            Box::new(SharedWorker::new_inherited(port, control_sender)),
+            Rc::new(SharedWorker::new_inherited(port, control_sender)),
             global,
             proto,
-        )
+        );
+        global.track_lifecycle_observer(&*worker);
+        worker
     }
 
     pub(crate) fn dispatch_simple_error(cx: &mut JSContext, address: TrustedSharedWorkerAddress) {
@@ -407,8 +452,16 @@ impl SharedWorker {
                 continue;
             }
             let _ = registration
-                ._control_sender
+                .control_sender
                 .send(SharedWorkerControlMsg::SetNetworkOnlineState(online));
+        }
+    }
+}
+
+impl LifecycleObserver for SharedWorker {
+    fn on_tear_down(&self) {
+        if !self.detached.replace(true) {
+            Self::remove_owner(self.registration_id.take());
         }
     }
 }
@@ -540,11 +593,14 @@ impl SharedWorkerMethods<crate::DomTypeHolder> for SharedWorker {
                 // Step 11.5.6. Entangle outsidePort and insidePort.
                 let inside_port_impl =
                     SharedWorker::create_entangled_inside_port(cx, global, &outside_port)?;
+                registration.owner_count.fetch_add(1, Ordering::SeqCst);
+                worker.registration_id.set(Some(registration.id));
                 // Step 11.5.7. Queue a global task on the DOM manipulation task source given workerGlobalScope to fire an event named connect at workerGlobalScope, using MessageEvent, with the data attribute initialized to the empty string, the ports attribute initialized to a new frozen array containing only insidePort, and the source attribute initialized to insidePort.
                 if send_connect_to_created_worker(&registration, inside_port_impl) {
+                    Self::remove_owner(worker.registration_id.take());
                     SharedWorker::queue_simple_error(global, worker_addr);
                 }
-                // TODO Step 11.5.8. Append the relevant owner to add given outsideSettings to workerGlobalScope's owner set.
+                // Step 11.5.8. Append the relevant owner to add given outsideSettings to workerGlobalScope's owner set.
                 return Ok(worker);
             },
             SharedWorkerClaimResult::Failed => {
@@ -624,6 +680,7 @@ impl SharedWorkerMethods<crate::DomTypeHolder> for SharedWorker {
 
         let (setup_sender, setup_receiver) = unbounded();
         let (registered_sender, registered_receiver) = unbounded();
+        let shared_worker_addr = global.register_shared_lifecycle(worker_addr.clone());
 
         // Step 11.6. Otherwise, in parallel, run a worker given worker, urlRecord, outsideSettings, outsidePort, and options.
         let _join_handle = match SharedWorkerGlobalScope::run_shared_worker_scope(
@@ -633,7 +690,7 @@ impl SharedWorkerMethods<crate::DomTypeHolder> for SharedWorker {
             worker_name,
             worker_type,
             worker_url,
-            worker_addr.clone(),
+            shared_worker_addr,
             parent_event_loop_sender,
             #[cfg(feature = "devtools")]
             devtools_receiver,
@@ -680,8 +737,9 @@ impl SharedWorkerMethods<crate::DomTypeHolder> for SharedWorker {
             extended_lifetime,
             worker_is_secure_context,
             closing,
+            owner_count: Arc::new(AtomicUsize::new(1)),
             sender,
-            _control_sender: control_sender,
+            control_sender,
         };
 
         if !transition_creating_to_created(&shared_worker_key, registration.clone()) {
@@ -695,6 +753,8 @@ impl SharedWorkerMethods<crate::DomTypeHolder> for SharedWorker {
             return Ok(worker);
         }
 
+        worker.registration_id.set(Some(registration_id));
+
         // Step 13. If is shared is true, then queue a global task on the DOM
         // manipulation task source given worker global scope to fire an event
         // named connect at worker global scope, using MessageEvent, with the data
@@ -702,6 +762,7 @@ impl SharedWorkerMethods<crate::DomTypeHolder> for SharedWorker {
         // initialized to a new frozen array containing inside port, and the
         // source attribute initialized to inside port.
         if send_connect_to_created_worker(&registration, initial_inside_port_impl) {
+            worker.registration_id.set(None);
             SharedWorker::unregister_shared_worker(registration_id);
             SharedWorker::queue_simple_error(global, worker_addr);
             return Ok(worker);

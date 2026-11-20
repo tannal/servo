@@ -4,11 +4,12 @@
 
 use std::cell::RefCell;
 use std::collections::VecDeque;
+use std::rc::Rc;
 
 use dom_struct::dom_struct;
 use js::context::JSContext;
 use script_bindings::domstring::TracedDOMString;
-use script_bindings::reflector::{Reflector, reflect_dom_object};
+use script_bindings::reflector::{Reflector, reflect_weak_referenceable_dom_object};
 use script_bindings::root::DomRoot;
 use servo_base::generic_channel::{GenericCallback, GenericSend};
 use servo_url::ServoUrl;
@@ -23,6 +24,7 @@ use crate::dom::bindings::reflector::DomGlobal;
 use crate::dom::bindings::str::DOMString;
 use crate::dom::fetch::request::Request;
 use crate::dom::globalscope::GlobalScope;
+use crate::dom::globalscope::lifecycle::LifecycleObserver;
 use crate::dom::{Promise, RootedPromise, TracedPromise};
 
 /// <https://w3c.github.io/ServiceWorker/#cache>
@@ -52,7 +54,10 @@ impl Cache {
     }
 
     pub(crate) fn new(cx: &mut JSContext, global: &GlobalScope, name: DOMString) -> DomRoot<Cache> {
-        reflect_dom_object(cx, Box::new(Cache::new_inherited(name)), global)
+        let cache =
+            reflect_weak_referenceable_dom_object(cx, Rc::new(Cache::new_inherited(name)), global);
+        global.track_lifecycle_observer(&*cache);
+        cache
     }
 
     /// Setup the callback to the backend service, if this hasn't been done already.
@@ -62,14 +67,20 @@ impl Cache {
         }
 
         let global = self.global();
-        let response_listener = Trusted::new(self);
+        let response_listener = global.register_shared_lifecycle(Trusted::new(self));
 
         let task_source = global
             .task_manager()
             .dom_manipulation_task_source()
             .to_sendable();
         let callback = GenericCallback::new(move |message| {
-            let response_listener = response_listener.clone();
+            let Some(response_listener) = response_listener
+                .lock()
+                .expect("Cache response listener lock poisoned")
+                .clone()
+            else {
+                return;
+            };
             let response = match message {
                 Ok(inner) => Some(inner),
                 Err(err) => {
@@ -160,6 +171,13 @@ impl Cache {
                 "Unexpected OpenCacheResult response in Cache handle_response."
             ),
         }
+    }
+}
+
+impl LifecycleObserver for Cache {
+    fn on_tear_down(&self) {
+        *self.callback.borrow_mut() = None;
+        self.pending_promises.borrow_mut().clear();
     }
 }
 

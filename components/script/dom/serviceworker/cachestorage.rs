@@ -4,10 +4,11 @@
 
 use std::cell::RefCell;
 use std::collections::VecDeque;
+use std::rc::Rc;
 
 use dom_struct::dom_struct;
 use js::context::JSContext;
-use script_bindings::reflector::{Reflector, reflect_dom_object};
+use script_bindings::reflector::{Reflector, reflect_weak_referenceable_dom_object};
 use script_bindings::root::DomRoot;
 use servo_base::generic_channel::{GenericCallback, GenericSend};
 use servo_url::ImmutableOrigin;
@@ -20,6 +21,7 @@ use crate::dom::bindings::refcounted::Trusted;
 use crate::dom::bindings::reflector::DomGlobal;
 use crate::dom::bindings::str::DOMString;
 use crate::dom::globalscope::GlobalScope;
+use crate::dom::globalscope::lifecycle::LifecycleObserver;
 use crate::dom::serviceworker::cache::Cache;
 use crate::dom::{Promise, RootedPromise, TracedPromise};
 
@@ -45,7 +47,13 @@ impl CacheStorage {
     }
 
     pub(crate) fn new(cx: &mut JSContext, global: &GlobalScope) -> DomRoot<CacheStorage> {
-        reflect_dom_object(cx, Box::new(CacheStorage::new_inherited()), global)
+        let storage = reflect_weak_referenceable_dom_object(
+            cx,
+            Rc::new(CacheStorage::new_inherited()),
+            global,
+        );
+        global.track_lifecycle_observer(&*storage);
+        storage
     }
 
     /// Setup the callback to the backend service, if this hasn't been done already.
@@ -55,14 +63,20 @@ impl CacheStorage {
         }
 
         let global = self.global();
-        let response_listener = Trusted::new(self);
+        let response_listener = global.register_shared_lifecycle(Trusted::new(self));
 
         let task_source = global
             .task_manager()
             .dom_manipulation_task_source()
             .to_sendable();
         let callback = GenericCallback::new(move |message| {
-            let response_listener = response_listener.clone();
+            let Some(response_listener) = response_listener
+                .lock()
+                .expect("CacheStorage response listener lock poisoned")
+                .clone()
+            else {
+                return;
+            };
             let response = match message {
                 Ok(inner) => Some(inner),
                 Err(err) => {
@@ -189,6 +203,13 @@ impl CacheStorage {
                 "Unexpected KeysResult response in CacheStorage handle_response."
             ),
         }
+    }
+}
+
+impl LifecycleObserver for CacheStorage {
+    fn on_tear_down(&self) {
+        *self.callback.borrow_mut() = None;
+        self.pending_promises.borrow_mut().clear();
     }
 }
 

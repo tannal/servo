@@ -6,8 +6,8 @@
 
 use std::collections::VecDeque;
 use std::io;
-use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
+use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
 
 use content_security_policy::Violation;
@@ -78,7 +78,6 @@ pub(crate) enum SharedWorkerScriptMsg {
 }
 
 pub(crate) enum SharedWorkerControlMsg {
-    #[expect(dead_code)]
     Exit,
     SetNetworkOnlineState(bool),
 }
@@ -160,7 +159,9 @@ pub(crate) struct SharedWorkerGlobalScope {
     webview_id: WebViewId,
     task_queue: TaskQueue<SharedWorkerScriptMsg>,
     own_sender: Sender<SharedWorkerScriptMsg>,
-    worker: DomRefCell<Option<TrustedSharedWorkerAddress>>,
+    #[ignore_malloc_size_of = "Arc"]
+    #[no_trace]
+    worker: Arc<Mutex<Option<TrustedSharedWorkerAddress>>>,
     parent_event_loop_sender: ScriptEventLoopSender,
     #[ignore_malloc_size_of = "ImageCache"]
     #[no_trace]
@@ -237,7 +238,7 @@ impl SharedWorkerGlobalScope {
         worker_name: DOMString,
         worker_type: WorkerType,
         worker_url: ServoUrl,
-        worker: TrustedSharedWorkerAddress,
+        worker: Arc<Mutex<Option<TrustedSharedWorkerAddress>>>,
         parent_event_loop_sender: ScriptEventLoopSender,
         from_devtools_receiver: Option<RoutedReceiver<WorkerDevtoolsControlMsg>>,
         runtime: Runtime,
@@ -276,7 +277,7 @@ impl SharedWorkerGlobalScope {
             webview_id,
             task_queue: TaskQueue::new(receiver),
             own_sender,
-            worker: DomRefCell::new(Some(worker)),
+            worker,
             parent_event_loop_sender,
             image_cache,
             browsing_context,
@@ -302,7 +303,7 @@ impl SharedWorkerGlobalScope {
         worker_name: DOMString,
         worker_type: WorkerType,
         worker_url: ServoUrl,
-        worker: TrustedSharedWorkerAddress,
+        worker: Arc<Mutex<Option<TrustedSharedWorkerAddress>>>,
         parent_event_loop_sender: ScriptEventLoopSender,
         from_devtools_receiver: Option<RoutedReceiver<WorkerDevtoolsControlMsg>>,
         runtime: Runtime,
@@ -365,7 +366,7 @@ impl SharedWorkerGlobalScope {
         worker_name: DOMString,
         worker_type: WorkerType,
         worker_url: UrlWithBlobClaim,
-        worker: TrustedSharedWorkerAddress,
+        worker: Arc<Mutex<Option<TrustedSharedWorkerAddress>>>,
         parent_event_loop_sender: ScriptEventLoopSender,
         #[cfg(feature = "devtools")] from_devtools_receiver: GenericReceiver<
             DevtoolScriptControlMsg,
@@ -532,10 +533,12 @@ impl SharedWorkerGlobalScope {
                 }
 
                 if setup_sender.send(worker_is_secure_context).is_err() {
+                    let _ = global.worker.lock().unwrap().take();
                     return;
                 }
 
                 if registration_receiver.recv().is_err() {
+                    let _ = global.worker.lock().unwrap().take();
                     return;
                 }
                 // Keep cleanup guard alive for the remainder of worker execution.
@@ -591,6 +594,7 @@ impl SharedWorkerGlobalScope {
                         event_loop_sender,
                         CommonScriptMsg::CollectReports,
                     );
+                let _ = global.worker.lock().unwrap().take();
             })
     }
 
@@ -622,7 +626,9 @@ impl SharedWorkerGlobalScope {
     pub(crate) fn forward_simple_error_at_worker(&self) {
         SharedWorker::unregister_shared_worker(self.registration_id);
         let pipeline_id = self.upcast::<GlobalScope>().pipeline_id();
-        let worker = self.worker.borrow().clone().expect("worker must be set");
+        let Some(worker) = self.worker.lock().unwrap().take() else {
+            return;
+        };
         // Step 1.1. Queue a global task on the DOM manipulation task source given
         // worker's relevant global object to fire an event named error at worker.
         if let Err(error) = self.parent_event_loop_sender.send(CommonScriptMsg::Task(
@@ -652,7 +658,9 @@ impl SharedWorkerGlobalScope {
     /// Step 11 of onComplete of <https://html.spec.whatwg.org/multipage/#run-a-worker>
     pub(crate) fn enable_outside_port_message_queue(&self) {
         let pipeline_id = self.upcast::<GlobalScope>().pipeline_id();
-        let worker = self.worker.borrow().clone().expect("worker must be set");
+        let Some(worker) = self.worker.lock().unwrap().take() else {
+            return;
+        };
 
         if let Err(error) = self.parent_event_loop_sender.send(CommonScriptMsg::Task(
             WorkerEvent,

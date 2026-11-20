@@ -3,6 +3,7 @@
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
 use std::cell::{Cell, Ref, RefCell};
+use std::rc::Rc;
 
 use cssparser::Parser;
 use dom_struct::dom_struct;
@@ -13,7 +14,7 @@ use js::context::JSContext;
 use js::rust::HandleObject;
 use script_bindings::cell::DomRefCell;
 use script_bindings::domstring::TracedDOMString;
-use script_bindings::reflector::{Reflector, reflect_dom_object_with_proto};
+use script_bindings::reflector::{Reflector, reflect_weak_referenceable_dom_object_with_proto};
 use servo_arc::Arc as ServoArc;
 use style::error_reporting::ParseErrorReporter;
 use style::font_face::SourceList;
@@ -247,9 +248,9 @@ impl FontFace {
 
         // set font face’s corresponding attributes to the empty string, and set font face’s status
         // attribute to "error"
-        reflect_dom_object_with_proto(
+        reflect_weak_referenceable_dom_object_with_proto(
             cx,
-            Box::new(Self {
+            Rc::new(Self {
                 reflector: Reflector::new(),
                 font_face_set: MutNullableDom::default(),
                 font_status_promise: font_status_promise.to_traced(),
@@ -311,9 +312,9 @@ impl FontFace {
         descriptors: &Descriptors,
         font_status_promise: &RootedPromise,
     ) -> DomRoot<Self> {
-        reflect_dom_object_with_proto(
+        reflect_weak_referenceable_dom_object_with_proto(
             cx,
-            Box::new(Self::new_inherited(
+            Rc::new(Self::new_inherited(
                 font_family,
                 urls,
                 descriptors,
@@ -368,9 +369,9 @@ impl FontFace {
         let descriptors = serialize_parsed_descriptors(&font_face_rule.descriptors);
 
         let font_status_promise = Promise::new(cx, global);
-        Some(reflect_dom_object_with_proto(
+        Some(reflect_weak_referenceable_dom_object_with_proto(
             cx,
-            Box::new(Self::new_inherited_for_web_font(
+            Rc::new(Self::new_inherited_for_web_font(
                 family_name,
                 descriptors,
                 font_face_rule.descriptors.src.clone(),
@@ -663,7 +664,7 @@ impl FontFaceMethods<crate::DomTypeHolder> for FontFace {
         }
 
         let global = self.global();
-        let trusted = Trusted::new(self);
+        let trusted = global.register_shared_lifecycle(Trusted::new(self));
         let task_source = global
             .task_manager()
             .font_loading_task_source()
@@ -671,7 +672,9 @@ impl FontFaceMethods<crate::DomTypeHolder> for FontFace {
 
         let finished_callback = Box::new(
             move |family_name: LowercaseFontFamilyName, load_result: Option<_>| {
-                let trusted = trusted.clone();
+                let Some(trusted) = trusted.lock().unwrap().take() else {
+                    return;
+                };
 
                 // Step 5. When the load operation completes, successfully or not, queue a task to
                 // run the following steps synchronously:
