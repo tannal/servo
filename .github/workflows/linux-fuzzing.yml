@@ -54,13 +54,6 @@ jobs:
     name: Fuzzing [${{ needs.runner-select.outputs.unique-id }}]
     runs-on: ${{ needs.runner-select.outputs.selected-runner-label }}
     steps:
-      - name: Free Disk Space (Ubuntu)
-        uses: jlumbroso/free-disk-space@main
-        if: ${{ runner.environment != 'self-hosted' }}
-        with:
-          tool-cache: false
-          large-packages: false
-          swap-storage: false
       - uses: servo/ci-runners/actions/checkout@b42c96524cdd72126255602c69c4ad649c750ebf
       - uses: actions/download-artifact@v8
         with:
@@ -71,15 +64,47 @@ jobs:
       - name: Setup Python
         if: ${{ runner.environment != 'self-hosted' }}
         uses: ./.github/actions/setup-python
+      - name: Cache uv packages
+        if: ${{ runner.environment != 'self-hosted' }}
+        uses: actions/cache@v5
+        with:
+          path: ~/.cache/uv
+          key: uv-fuzzing-${{ runner.os }}-${{ hashFiles('uv.lock') }}
+          restore-keys: |
+            uv-fuzzing-${{ runner.os }}-
+      - name: Cache fuzzing runner
+        if: ${{ runner.environment != 'self-hosted' }}
+        uses: actions/cache@v5
+        with:
+          path: target/fuzzing-runner
+          key: fuzzing-runner-${{ hashFiles('python/servo/fuzzing.py') }}
       - name: Change Mirror Priorities
         if: ${{ runner.environment != 'self-hosted' }}
         uses: ./.github/actions/apt-mirrors
-      - name: Bootstrap dependencies
+      - name: Install runtime dependencies
         if: ${{ runner.environment != 'self-hosted' }}
-        timeout-minutes: 30
+        env:
+          DEBIAN_FRONTEND: noninteractive
         run: |
-          sudo apt update
-          ./mach bootstrap --yes --skip-lints --skip-nextest
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends \
+            gstreamer1.0-gl \
+            gstreamer1.0-libav \
+            gstreamer1.0-plugins-bad \
+            gstreamer1.0-plugins-base \
+            gstreamer1.0-plugins-good \
+            gstreamer1.0-plugins-ugly \
+            libegl1 \
+            libgl1-mesa-dri \
+            libgles2 \
+            libgstreamer-plugins-bad1.0-0 \
+            libgstreamer-plugins-base1.0-0 \
+            libgstreamer1.0-0 \
+            libunwind8 \
+            libvulkan1 \
+            libxkbcommon-x11-0 \
+            libxkbcommon0 \
+            libxmu6
       - name: Run fuzzing replay
         env:
           GH_TOKEN: ${{ github.token }}
