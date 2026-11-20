@@ -9,8 +9,8 @@ use embedder_traits::{Image as EmbedderImage, PixelFormat as EmbedderPixelFormat
 use js::context::JSContext;
 use net_traits::blob_url_store::UrlWithBlobClaim;
 use net_traits::image_cache::{
-    Image, ImageCache, ImageCacheResponseCallback, ImageCacheResult, ImageLoadListener,
-    ImageOrMetadataAvailable, ImageResponse, PendingImageId, RasterizationResult,
+    Image, ImageCache, ImageCacheResult, ImageOrMetadataAvailable, ImageResponse, PendingImageId,
+    RasterizationResult,
 };
 use net_traits::request::{Destination, RequestId};
 use net_traits::{FetchMetadata, FetchResponseMsg, NetworkError, ResourceFetchTiming};
@@ -193,13 +193,11 @@ impl Document {
                     RasterizationResult::PendingRasterization => {
                         // The rasterization callback will end up calling "process_favicon_image" again,
                         // but this time with a raster image.
-                        let image_cache_sender = self
-                            .register_favicon_image_cache_callback(vector_image.id, is_fallback);
                         image_cache.add_rasterization_complete_listener(
                             window.pipeline_id(),
                             vector_image.id,
                             size,
-                            image_cache_sender,
+                            window.image_cache_response_callback(),
                         );
                     },
                     RasterizationResult::InvalidSvgParameters => {},
@@ -208,11 +206,7 @@ impl Document {
         }
     }
 
-    fn register_favicon_image_cache_callback(
-        &self,
-        id: PendingImageId,
-        is_fallback: bool,
-    ) -> ImageCacheResponseCallback {
+    fn register_favicon_image_cache_callback(&self, id: PendingImageId, is_fallback: bool) {
         let trusted_doc = Trusted::new(self);
         let window = self.window();
         window.register_image_cache_listener(id, move |response, _| {
@@ -232,7 +226,7 @@ impl Document {
                     let document = trusted_doc.root();
                     document.process_favicon_image(image, is_fallback);
                 }));
-        })
+        });
     }
 
     /// Fetches `/favicon.ico` from the document's URL as a fallback when no
@@ -284,8 +278,7 @@ impl Document {
             },
             ImageCacheResult::Available(ImageOrMetadataAvailable::MetadataAvailable(_, id)) |
             ImageCacheResult::Pending(id) => {
-                let sender = self.register_favicon_image_cache_callback(id, true);
-                image_cache.add_listener(ImageLoadListener::new(sender, window.pipeline_id(), id));
+                self.register_favicon_image_cache_callback(id, true);
             },
             ImageCacheResult::ReadyForRequest(id) => {
                 let referrer = self.owner_global().get_referrer();
@@ -302,8 +295,7 @@ impl Document {
                 .pipeline_id(Some(window.pipeline_id()))
                 .synchronous(true);
 
-                let sender = self.register_favicon_image_cache_callback(id, true);
-                image_cache.add_listener(ImageLoadListener::new(sender, window.pipeline_id(), id));
+                self.register_favicon_image_cache_callback(id, true);
 
                 let fetch_context = FaviconFetchContext::new(image_cache, id, favicon_url, true);
                 self.fetch_favicon(request, fetch_context);

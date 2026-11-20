@@ -13,8 +13,7 @@ use html5ever::{LocalName, Prefix, local_name};
 use js::context::{JSContext, NoGC};
 use js::rust::HandleObject;
 use net_traits::image_cache::{
-    ImageCacheResponseCallback, ImageCacheResult, ImageLoadListener, ImageOrMetadataAvailable,
-    ImageResponse, PendingImageId,
+    ImageCacheResult, ImageOrMetadataAvailable, ImageResponse, PendingImageId,
 };
 use net_traits::request::{Destination, Initiator, ParserMetadata, RequestBuilder};
 use net_traits::{NetworkError, ReferrerPolicy};
@@ -816,24 +815,14 @@ impl HTMLLinkElement {
             },
             ImageCacheResult::Available(ImageOrMetadataAvailable::MetadataAvailable(_, id)) |
             ImageCacheResult::Pending(id) => {
-                let sender = self.register_image_cache_callback(id);
-                window.image_cache().add_listener(ImageLoadListener::new(
-                    sender,
-                    window.pipeline_id(),
-                    id,
-                ));
+                self.register_image_cache_callback(id);
             },
             ImageCacheResult::ReadyForRequest(id) => {
                 let Some(request) = self.default_fetch_and_process_the_linked_resource() else {
                     return;
                 };
 
-                let sender = self.register_image_cache_callback(id);
-                window.image_cache().add_listener(ImageLoadListener::new(
-                    sender,
-                    window.pipeline_id(),
-                    id,
-                ));
+                self.register_image_cache_callback(id);
 
                 let fetch_context =
                     FaviconFetchContext::new(window.image_cache(), id, favicon_url, false);
@@ -843,7 +832,7 @@ impl HTMLLinkElement {
         };
     }
 
-    fn register_image_cache_callback(&self, id: PendingImageId) -> ImageCacheResponseCallback {
+    fn register_image_cache_callback(&self, id: PendingImageId) {
         let trusted_node = Trusted::new(self);
         let window = self.owner_window();
         let request_generation_id = self.get_request_generation_id();
@@ -876,7 +865,7 @@ impl HTMLLinkElement {
 
                     element.owner_document().process_favicon_image(image, false);
                 }));
-        })
+        });
     }
 
     /// <https://html.spec.whatwg.org/multipage/#link-type-preload:fetch-and-process-the-linked-resource-2>

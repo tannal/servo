@@ -17,8 +17,7 @@ use layout_api::{HTMLMediaData, MediaMetadata};
 use net_traits::blob_url_store::UrlWithBlobClaim;
 use net_traits::fetch::fetch_controller::FetchController;
 use net_traits::image_cache::{
-    ImageCache, ImageCacheResult, ImageLoadListener, ImageOrMetadataAvailable, ImageResponse,
-    PendingImageId,
+    ImageCache, ImageCacheResult, ImageOrMetadataAvailable, ImageResponse, PendingImageId,
 };
 use net_traits::request::{CredentialsMode, Destination, RequestBuilder, RequestId};
 use net_traits::{
@@ -281,7 +280,7 @@ impl HTMLVideoElement {
 
         let trusted_node = Trusted::new(self);
         let generation = self.generation_id();
-        let callback = window.register_image_cache_listener(id, move |response, cx| {
+        window.register_image_cache_listener(id, move |response, cx| {
             let element = trusted_node.root();
 
             // Ignore any image response for a previous request that has been discarded.
@@ -290,8 +289,6 @@ impl HTMLVideoElement {
             }
             element.process_image_response(cx, response.response);
         });
-
-        image_cache.add_listener(ImageLoadListener::new(callback, window.pipeline_id(), id));
     }
 
     /// <https://html.spec.whatwg.org/multipage/#poster-frame>

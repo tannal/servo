@@ -15,8 +15,7 @@ use js::rust::HandleObject;
 use layout_api::BoxAreaType;
 use mime::{self, Mime};
 use net_traits::image_cache::{
-    Image, ImageCache, ImageCacheResult, ImageLoadListener, ImageOrMetadataAvailable,
-    ImageResponse, PendingImageId,
+    Image, ImageCache, ImageCacheResult, ImageOrMetadataAvailable, ImageResponse, PendingImageId,
 };
 use net_traits::request::{CorsSettings, Destination, Initiator, RequestId};
 use net_traits::{
@@ -325,7 +324,7 @@ impl HTMLImageElement {
         let trusted_node = Trusted::new(self);
         let generation = self.generation_id();
         let window = self.owner_window();
-        let callback = window.register_image_cache_listener(id, move |response, _| {
+        window.register_image_cache_listener(id, move |response, _| {
             let trusted_node = trusted_node.clone();
             let window = trusted_node.root().owner_window();
             let callback_type = change_type.clone();
@@ -354,12 +353,6 @@ impl HTMLImageElement {
                 }
             }));
         });
-
-        window.image_cache().add_listener(ImageLoadListener::new(
-            callback,
-            window.pipeline_id(),
-            id,
-        ));
     }
 
     fn fetch_request(&self, img_url: &ServoUrl, id: PendingImageId) {

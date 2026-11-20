@@ -771,21 +771,35 @@ impl Window {
         )
     }
 
-    pub(crate) fn register_image_cache_listener(
-        &self,
-        id: PendingImageId,
-        callback: impl Fn(PendingImageResponse, &mut JSContext) + 'static,
-    ) -> ImageCacheResponseCallback {
-        self.pending_image_callbacks
-            .borrow_mut()
-            .entry(id)
-            .or_default()
-            .push(PendingImageCallback(Box::new(callback)));
-
+    pub(crate) fn image_cache_response_callback(&self) -> ImageCacheResponseCallback {
         let image_cache_sender = self.image_cache_sender.clone();
         Box::new(move |message| {
             let _ = image_cache_sender.send(message);
         })
+    }
+
+    pub(crate) fn register_image_cache_listener(
+        &self,
+        id: PendingImageId,
+        callback: impl Fn(PendingImageResponse, &mut JSContext) + 'static,
+    ) {
+        let is_new_listener = {
+            let mut pending_image_callbacks = self.pending_image_callbacks.borrow_mut();
+            let entry = pending_image_callbacks.entry(id);
+            let is_new = matches!(entry, Entry::Vacant(_));
+            entry
+                .or_default()
+                .push(PendingImageCallback(Box::new(callback)));
+            is_new
+        };
+
+        if is_new_listener {
+            self.image_cache().add_listener(ImageLoadListener::new(
+                self.image_cache_response_callback(),
+                self.pipeline_id(),
+                id,
+            ));
+        }
     }
 
     fn pending_layout_image_notification(&self, no_gc: &NoGC, response: PendingImageResponse) {
@@ -4001,14 +4015,12 @@ impl Window {
             let mut images = self.pending_layout_images.borrow_mut();
             if !images.contains_key(&id) {
                 let trusted_node = Trusted::new(&*node);
-                let sender = self.register_image_cache_listener(id, move |response, cx| {
+                self.register_image_cache_listener(id, move |response, cx| {
                     trusted_node
                         .root()
                         .owner_window()
                         .pending_layout_image_notification(cx.no_gc(), response);
                 });
-
-                image_cache.add_listener(ImageLoadListener::new(sender, pipeline_id, id));
             }
 
             let nodes = images.entry(id).or_default();
