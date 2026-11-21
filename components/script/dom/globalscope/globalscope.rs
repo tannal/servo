@@ -1198,7 +1198,7 @@ impl GlobalScope {
         // Note: we are in the task, and running the relevant steps.
 
         // Let finalTargetPort be the MessagePort in whose port message queue the task now finds itself.
-        if let Some((dom_port, PortMessageTask { origin, data })) = should_dispatch {
+        if let Some((dom_port, PortMessageTask { origin: _, data })) = should_dispatch {
             // Let messageEventTarget be finalTargetPort's message event target.
             let message_event_target = dom_port.upcast();
 
@@ -1252,7 +1252,7 @@ impl GlobalScope {
                             message_event_target,
                             self,
                             message_clone.handle(),
-                            Some(origin.ascii_serialization().as_ref()),
+                            None,
                             None,
                             ports,
                         );

@@ -932,12 +932,15 @@ impl DedicatedWorkerGlobalScope {
         if let Ok(ports) =
             structuredclone::read(cx, scope.upcast(), *msg.data, message.handle_mut())
         {
+            // Step 9.7 of the "message port post message steps" of the implicit MessagePort:
+            // origin is not set (defaults to the empty string).
+            // <https://html.spec.whatwg.org/multipage/#message-port-post-message-steps>
             MessageEvent::dispatch_jsval(
                 cx,
                 target,
                 scope.upcast(),
                 message.handle(),
-                Some(msg.origin.ascii_serialization().as_ref()),
+                None,
                 None,
                 ports,
             );

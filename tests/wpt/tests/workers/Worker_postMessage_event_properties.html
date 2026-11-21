@@ -1,0 +1,46 @@
+<!DOCTYPE html>
+<meta charset="utf-8">
+<title>Worker.postMessage(): MessageEvent properties in DedicatedWorkerGlobalScope</title>
+<link rel="help" href="https://html.spec.whatwg.org/multipage/web-messaging.html#message-port-post-message-steps">
+<script src="/resources/testharness.js"></script>
+<script src="/resources/testharnessreport.js"></script>
+<div id="log"></div>
+<script>
+async_test(function(t) {
+  const blob = new Blob([`
+    self.onmessage = function(evt) {
+      self.postMessage({
+        isTrusted: evt.isTrusted,
+        type: evt.type,
+        bubbles: evt.bubbles,
+        cancelable: evt.cancelable,
+        data: evt.data,
+        origin: evt.origin,
+        lastEventId: evt.lastEventId,
+        source: evt.source,
+        portsLength: evt.ports.length,
+      });
+    };
+  `], { type: "text/javascript" });
+  const url = URL.createObjectURL(blob);
+  const worker = new Worker(url);
+  URL.revokeObjectURL(url);
+
+  worker.onmessage = t.step_func_done(function(evt) {
+    const props = evt.data;
+    assert_true(props.isTrusted, "isTrusted should be true");
+    assert_equals(props.type, "message", "type");
+    assert_false(props.bubbles, "bubbles should be false");
+    assert_false(props.cancelable, "cancelable should be false");
+    assert_equals(props.data, "ping", "data");
+    assert_equals(props.origin, "", "origin should be empty string");
+    assert_equals(props.lastEventId, "", "lastEventId");
+    assert_equals(props.source, null, "source");
+    assert_equals(props.portsLength, 0, "ports");
+    worker.terminate();
+  });
+
+  worker.onerror = t.unreached_func("worker error");
+  worker.postMessage("ping");
+}, "DedicatedWorkerGlobalScope message event properties");
+</script>
