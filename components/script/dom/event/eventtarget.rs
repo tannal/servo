@@ -245,21 +245,14 @@ impl CompiledEventListener {
         // Step 3
         match *self {
             CompiledEventListener::Wasm(ref handler_id, _) => {
-                let event_type = event.type_();
-                println!(
-                    "[Servo EventTarget]: Firing native Wasm handler '{}' for event '{}'",
-                    handler_id, event_type
-                );
-                // 1. Enter the target global realm using the cx passed into call_or_handle_event
-                let mut realm = enter_auto_realm(cx, &*self.associated_global());
-                let cx = &mut realm.current_realm();
-
-                // 2. Dispatch event to Wasm host with active JSContext
+                // The WebAssembly runtime owns the realm/JSContext setup for
+                // the callback, since it has to refresh the store's context
+                // and enter the component's global realm.
                 crate::wasm_host::dispatch_wasm_event(
                     cx,
-                    0,
                     &handler_id.to_string(),
-                    &event_type.to_string(),
+                    object,
+                    event,
                 );
                 Ok(())
             },

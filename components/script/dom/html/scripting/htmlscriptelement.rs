@@ -270,11 +270,18 @@ pub(crate) enum ScriptType {
     WasmComponent,
 }
 
+/// The Component Model binary format starts with the core WebAssembly magic
+/// and the component-model version word (`0x0d 0x00 0x01 0x00`).
+fn is_wasm_component_bytes(bytes: &[u8]) -> bool {
+    bytes.len() >= 8 && bytes.starts_with(b"\0asm") && bytes[4..8] == [0x0d, 0x00, 0x01, 0x00]
+}
+
 #[derive(JSTraceable, MallocSizeOf)]
 #[cfg_attr(crown, crown::unrooted_must_root_lint::must_root)]
 pub(crate) enum TracedScript {
     Classic(Box<ClassicScript>),
     Module(#[conditional_malloc_size_of] Rc<ModuleTree>),
+    WasmComponent(Vec<u8>),
 }
 
 #[expect(clippy::large_enum_variant)]
@@ -297,6 +304,7 @@ impl From<Script> for TracedScript {
             Script::ImportMap(_) => {
                 unreachable!("Import maps are executed immediately, traced variant is not needed")
             },
+            Script::WasmComponent(bytes) => TracedScript::WasmComponent(bytes),
         }
     }
 }
@@ -309,6 +317,7 @@ impl From<TracedScript> for Script {
                 Script::Classic(RootedTraceableBox::from_box(classic))
             },
             TracedScript::Module(module) => Script::Module(RootedTraceableBox::new(module)),
+            TracedScript::WasmComponent(bytes) => Script::WasmComponent(bytes),
         }
     }
 }
@@ -382,13 +391,18 @@ impl FetchResponseListener for ClassicContext {
 
         let elem = self.elem.root();
 
-        if elem.get_script_type() == Some(ScriptType::WasmComponent) {
+        // `<script src="app.wasm">` is intentionally enough: components are
+        // recognised by their magic bytes, just as a JavaScript file is
+        // recognised by its MIME type.  The explicit `type="wasm-component"`
+        // spelling remains supported for pages that prefer to be explicit.
+        let script_type = elem.script_type();
+        let is_wasm_component = matches!(script_type, Some(ScriptType::WasmComponent))
+            || (matches!(script_type, Some(ScriptType::Classic) | None)
+                && is_wasm_component_bytes(&self.data));
+
+        if is_wasm_component {
             let wasm_bytes = self.data.to_vec();
-            println!(
-                "[Servo Wasm Debug]: Downloaded Wasm bytes = {}",
-                wasm_bytes.len()
-            );
-            *elem.result.borrow_mut() = Some(Box::new(Ok(Script::WasmComponent(wasm_bytes))));
+            *elem.result.borrow_mut() = Some(Ok(TracedScript::WasmComponent(wasm_bytes)));
             elem.finish_fetching_a_script(cx, self.kind);
             return;
         }
@@ -1183,21 +1197,21 @@ impl HTMLScriptElement {
                     return Some(ScriptType::ImportMap);
                 }
 
-                if ty
+                let type_attr_value = ty.as_attr_ref().value();
+
+                if type_attr_value
                     .trim_matches(HTML_SPACE_CHARACTERS)
                     .eq_ignore_ascii_case("importmap")
                 {
                     return Some(ScriptType::ImportMap);
                 }
 
-                if ty
+                if type_attr_value
                     .trim_matches(HTML_SPACE_CHARACTERS)
                     .eq_ignore_ascii_case("wasm-component")
                 {
                     return Some(ScriptType::WasmComponent);
                 }
-
-                let type_attr_value = ty.as_attr_ref().value();
 
                 // Step 9. If the script block's type string is a JavaScript MIME type essence match,
                 // or el has a type attribute whose value with leading and trailing ASCII whitespace
