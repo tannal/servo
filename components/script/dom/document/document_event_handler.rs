@@ -232,6 +232,9 @@ pub(crate) struct DocumentEventHandler {
     /// The most recent mouse movement point, used for processing `mouseleave` events.
     #[no_trace]
     most_recent_mousemove_point: Cell<Option<Point2D<f32, CSSPixel>>>,
+    /// The most recent mouse movement screen point, used for `movementX`/`movementY`.
+    #[no_trace]
+    most_recent_mousemove_screen_point: Cell<Option<Point2D<i32, CSSPixel>>>,
     /// The currently set [`Cursor`] or `None` if the `Document` isn't being hovered
     /// by the cursor.
     #[no_trace]
@@ -276,6 +279,7 @@ impl DocumentEventHandler {
             current_active_element: Default::default(),
             most_recently_clicked_element: Default::default(),
             most_recent_mousemove_point: Default::default(),
+            most_recent_mousemove_screen_point: Default::default(),
             current_cursor: Default::default(),
             active_touch_points: Default::default(),
             touch_sequence_click_allowed: Cell::new(true),
@@ -557,6 +561,8 @@ impl DocumentEventHandler {
             }
         }
 
+        self.most_recent_mousemove_screen_point.set(None);
+
         // We do not want to always inform the embedder that cursor has been set to the
         // default cursor, in order to avoid a timing issue when moving between `<iframe>`
         // elements. There is currently no way to control which `SetCursor` message will
@@ -835,6 +841,15 @@ impl DocumentEventHandler {
             &hit_test_result,
             input_event,
         );
+        let screen_point = mouse_event.screen_point();
+        if let Some(previous_screen_point) = self.most_recent_mousemove_screen_point.get() {
+            mouse_event.set_movement(
+                (screen_point.x - previous_screen_point.x) as f64,
+                (screen_point.y - previous_screen_point.y) as f64,
+            );
+        }
+        self.most_recent_mousemove_screen_point
+            .set(Some(screen_point));
 
         // Send pointermove event before mousemove.
         // If pointer capture is active, retarget the pointer/mouse events to
@@ -1281,9 +1296,10 @@ impl DocumentEventHandler {
         }
 
         let mut dispatch_button_event = |event_name: Atom, click_count: usize| {
+            let is_pointer_event = matches!(&*event_name, "click" | "auxclick");
             let mouse_event = MouseEvent::for_platform_button_event(
                 cx,
-                event_name,
+                event_name.clone(),
                 event,
                 input_event.pressed_mouse_buttons,
                 &self.window,
@@ -1291,9 +1307,16 @@ impl DocumentEventHandler {
                 input_event.active_keyboard_modifiers,
                 click_count,
             );
-            let event = mouse_event.upcast::<Event>();
-            event.dispatch(cx, element.upcast(), false);
-            event.flags()
+            if is_pointer_event {
+                let pointer_event = mouse_event.to_pointer_event(cx, event_name);
+                let event = pointer_event.upcast::<Event>();
+                event.dispatch(cx, element.upcast(), false);
+                event.flags()
+            } else {
+                let event = mouse_event.upcast::<Event>();
+                event.dispatch(cx, element.upcast(), false);
+                event.flags()
+            }
         };
 
         let click_count = self
@@ -1346,7 +1369,7 @@ impl DocumentEventHandler {
         }
     }
 
-    /// <https://www.w3.org/TR/pointerevents4/#maybe-show-context-menu>
+    /// <https://www.w3c.org/TR/pointerevents4/#maybe-show-context-menu>
     fn maybe_show_context_menu(
         &self,
         cx: &mut JSContext,
@@ -1354,6 +1377,13 @@ impl DocumentEventHandler {
         hit_test_result: &HitTestResult,
         input_event: &ConstellationInputEvent,
     ) {
+        let screen_point = input_event
+            .event
+            .event
+            .point()
+            .map(|point| self.window.screen_point_for_webview_point(point))
+            .unwrap_or_else(|| hit_test_result.point_in_frame.to_i32());
+
         // <https://w3c.github.io/pointerevents/#contextmenu>
         let menu_event = PointerEvent::new(
             cx,
@@ -1363,7 +1393,7 @@ impl DocumentEventHandler {
             EventCancelable::Cancelable, // cancelable
             Some(&self.window),          // view
             0,                           // detail
-            hit_test_result.point_in_frame.to_i32(),
+            screen_point,
             hit_test_result.point_in_frame.to_i32(),
             hit_test_result
                 .point_relative_to_initial_containing_block
@@ -1389,6 +1419,7 @@ impl DocumentEventHandler {
             &[],                             // predicted_events
         );
         menu_event.upcast::<Event>().set_composed(true);
+        menu_event.upcast::<Event>().set_trusted(true);
 
         // Step 3. Let result = dispatch menuevent at target.
         let result = menu_event.upcast::<Event>().fire(cx, target);

@@ -240,7 +240,7 @@ impl PointerEventMethods<crate::DomTypeHolder> for PointerEvent {
             scroll_offset.x as i32 + init.parent.clientX,
             scroll_offset.y as i32 + init.parent.clientY,
         );
-        PointerEvent::new_with_proto(
+        let event = PointerEvent::new_with_proto(
             cx,
             window,
             proto,
@@ -271,7 +271,11 @@ impl PointerEventMethods<crate::DomTypeHolder> for PointerEvent {
             init.isPrimary,
             init.coalescedEvents.as_ref_slice(),
             init.predictedEvents.as_ref_slice(),
-        )
+        );
+        event
+            .mouseevent
+            .set_movement(*init.parent.movementX, *init.parent.movementY);
+        event
     }
 
     /// <https://w3c.github.io/pointerevents/#dom-pointerevent-pointerid>

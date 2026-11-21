@@ -16,6 +16,8 @@ interface MouseEvent : UIEvent {
     readonly    attribute long           y;
     readonly    attribute long           offsetX;
     readonly    attribute long           offsetY;
+    readonly    attribute double         movementX;
+    readonly    attribute double         movementY;
     readonly    attribute boolean        ctrlKey;
     readonly    attribute boolean        shiftKey;
     readonly    attribute boolean        altKey;
@@ -33,6 +35,8 @@ dictionary MouseEventInit : EventModifierInit {
     long           screenY = 0;
     long           clientX = 0;
     long           clientY = 0;
+    double         movementX = 0;
+    double         movementY = 0;
     short          button = 0;
     unsigned short buttons = 0;
     EventTarget?   relatedTarget = null;

@@ -7,6 +7,8 @@
 interface Screen {
   readonly attribute double availWidth;
   readonly attribute double availHeight;
+  readonly attribute double availLeft;
+  readonly attribute double availTop;
   readonly attribute double width;
   readonly attribute double height;
   readonly attribute unsigned long colorDepth;

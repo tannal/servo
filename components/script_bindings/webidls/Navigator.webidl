@@ -14,6 +14,7 @@ Navigator includes NavigatorContentUtils;
 Navigator includes NavigatorPlugins;
 Navigator includes NavigatorCookies;
 Navigator includes NavigatorConcurrentHardware;
+Navigator includes NavigatorAutomationInformation;
 
 // https://html.spec.whatwg.org/multipage/#navigatorid
 [Exposed=(Window,Worker)]
@@ -86,4 +87,14 @@ partial interface Navigator {
 interface mixin NavigatorContentUtils {
   [Throws, SecureContext, Pref="dom_navigator_protocol_handlers_enabled"] undefined registerProtocolHandler(DOMString scheme, USVString url);
   [Throws, SecureContext, Pref="dom_navigator_protocol_handlers_enabled"] undefined unregisterProtocolHandler(DOMString scheme, USVString url);
+};
+
+// https://w3c.github.io/webdriver/#interface
+interface mixin NavigatorAutomationInformation {
+  readonly attribute boolean webdriver;
+};
+
+// https://w3c.github.io/pointerevents/#extensions-to-the-navigator-interface
+partial interface Navigator {
+  readonly attribute long maxTouchPoints;
 };

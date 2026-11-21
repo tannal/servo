@@ -520,6 +520,23 @@ impl NavigatorMethods<crate::DomTypeHolder> for Navigator {
         hardware_concurrency()
     }
 
+    /// <https://w3c.github.io/pointerevents/#dom-navigator-maxtouchpoints>
+    fn MaxTouchPoints(&self) -> i32 {
+        #[cfg(any(target_os = "android", target_os = "ios"))]
+        {
+            5
+        }
+        #[cfg(not(any(target_os = "android", target_os = "ios")))]
+        {
+            0
+        }
+    }
+
+    /// <https://w3c.github.io/webdriver/#dom-navigatorautomationinformation-webdriver>
+    fn Webdriver(&self) -> bool {
+        false
+    }
+
     /// <https://w3c.github.io/clipboard-apis/#h-navigator-clipboard>
     fn Clipboard(&self, cx: &mut js::context::JSContext) -> DomRoot<Clipboard> {
         self.clipboard

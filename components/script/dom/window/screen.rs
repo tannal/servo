@@ -55,6 +55,14 @@ impl ScreenMethods<crate::DomTypeHolder> for Screen {
         Finite::wrap(self.screen_metrics().available_size.height as f64)
     }
 
+    fn AvailLeft(&self) -> Finite<f64> {
+        Finite::wrap(0.0)
+    }
+
+    fn AvailTop(&self) -> Finite<f64> {
+        Finite::wrap(0.0)
+    }
+
     /// <https://drafts.csswg.org/cssom-view/#dom-screen-width>
     fn Width(&self) -> Finite<f64> {
         Finite::wrap(self.screen_metrics().screen_size.width as f64)

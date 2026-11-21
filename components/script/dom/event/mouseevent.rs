@@ -25,6 +25,7 @@ use crate::dom::bindings::codegen::Bindings::MouseEventBinding::MouseEventMethod
 use crate::dom::bindings::codegen::Bindings::UIEventBinding::UIEventMethods;
 use crate::dom::bindings::error::Fallible;
 use crate::dom::bindings::inheritance::Castable;
+use crate::dom::bindings::num::Finite;
 use crate::dom::bindings::reflector::DomGlobal;
 use crate::dom::bindings::root::DomRoot;
 use crate::dom::bindings::str::DOMString;
@@ -83,6 +84,12 @@ pub(crate) struct MouseEvent {
 
     #[no_trace]
     point_in_target: Cell<Option<Point2D<f32, CSSPixel>>>,
+
+    /// <https://w3c.github.io/pointerlock/#dom-mouseevent-movementx>
+    movement_x: Cell<f64>,
+
+    /// <https://w3c.github.io/pointerlock/#dom-mouseevent-movementy>
+    movement_y: Cell<f64>,
 }
 
 impl MouseEvent {
@@ -96,6 +103,8 @@ impl MouseEvent {
             button: Cell::new(MouseButton::Primary),
             buttons: Cell::new(MouseButtons::empty()),
             point_in_target: Cell::new(None),
+            movement_x: Cell::new(0.0),
+            movement_y: Cell::new(0.0),
         }
     }
 
@@ -247,6 +256,13 @@ impl MouseEvent {
             ),
         };
 
+        let screen_point = input_event
+            .event
+            .event
+            .point()
+            .map(|point| window.screen_point_for_webview_point(point))
+            .unwrap_or_else(|| hit_test_result.point_in_frame.to_i32());
+
         let mouse_event = Self::new(
             cx,
             window,
@@ -255,7 +271,7 @@ impl MouseEvent {
             cancelable,
             Some(window),
             0i32,
-            hit_test_result.point_in_frame.to_i32(),
+            screen_point,
             hit_test_result.point_in_frame.to_i32(),
             hit_test_result
                 .point_relative_to_initial_containing_block
@@ -289,6 +305,7 @@ impl MouseEvent {
         click_count: usize,
     ) -> DomRoot<Self> {
         let client_point = hit_test_result.point_in_frame.to_i32();
+        let screen_point = window.screen_point_for_webview_point(event.point);
         let page_point = hit_test_result
             .point_relative_to_initial_containing_block
             .to_i32();
@@ -301,7 +318,7 @@ impl MouseEvent {
             EventCancelable::Cancelable,
             Some(window),
             click_count as i32,
-            client_point, // TODO: Get real screen coordinates?
+            screen_point,
             client_point,
             page_point,
             modifiers,
@@ -319,7 +336,7 @@ impl MouseEvent {
 
     /// Create a PointerEvent from this MouseEvent.
     /// <https://w3c.github.io/pointerevents/#the-primary-pointer>
-    /// For mouse, the pointer ID is always -1, and is_primary is always true.
+    /// For mouse, the pointer ID is always `PointerId::Mouse`, and is_primary is always true.
     pub(crate) fn to_pointer_event(
         &self,
         cx: &mut JSContext,
@@ -329,6 +346,7 @@ impl MouseEvent {
         let is_pointer_down = &*event_type == "pointerdown";
         let is_pointer_move = &*event_type == "pointermove";
         let is_pointer_up = &*event_type == "pointerup";
+        let is_click_like = matches!(&*event_type, "click" | "auxclick" | "contextmenu");
 
         // Pressure is 0.5 when button is down, 0.0 when up
         let pressure = if is_pointer_down || (is_pointer_move && !self.buttons.get().is_empty()) {
@@ -337,7 +355,7 @@ impl MouseEvent {
             0.0
         };
 
-        let button = if is_pointer_down || is_pointer_up {
+        let button = if is_pointer_down || is_pointer_up || is_click_like {
             self.button.get()
         } else {
             MouseButton::None
@@ -367,9 +385,9 @@ impl MouseEvent {
             self.buttons.get(),
             self.GetRelatedTarget().as_deref(),
             self.point_in_target.get(),
-            PointerId::Mouse as i32, // Mouse pointer ID is always -1
-            1,                       // width
-            1,                       // height
+            PointerId::Mouse as i32,
+            1, // width
+            1, // height
             pressure,
             0.0,      // tangential_pressure
             0,        // tilt_x
@@ -383,7 +401,13 @@ impl MouseEvent {
             &[],  // predicted_events
         );
 
+        pointer_event
+            .upcast::<MouseEvent>()
+            .set_movement(self.movement_x.get(), self.movement_y.get());
         pointer_event.upcast::<Event>().set_composed(composed);
+        pointer_event
+            .upcast::<Event>()
+            .set_trusted(self.upcast::<Event>().IsTrusted());
 
         pointer_event
     }
@@ -460,8 +484,17 @@ impl MouseEvent {
         self.button.get()
     }
 
+    pub(crate) fn screen_point(&self) -> Point2D<i32, CSSPixel> {
+        self.screen_point.get()
+    }
+
     pub(crate) fn client_point(&self) -> Point2D<i32, CSSPixel> {
         self.client_point.get()
+    }
+
+    pub(crate) fn set_movement(&self, movement_x: f64, movement_y: f64) {
+        self.movement_x.set(movement_x);
+        self.movement_y.set(movement_y);
     }
 
     pub(crate) fn buttons(&self) -> MouseButtons {
@@ -503,6 +536,7 @@ impl MouseEventMethods<crate::DomTypeHolder> for MouseEvent {
             init.relatedTarget.as_deref(),
             None,
         );
+        event.set_movement(*init.movementX, *init.movementY);
         event
             .upcast::<Event>()
             .set_composed(init.parent.parent.parent.composed);
@@ -527,6 +561,16 @@ impl MouseEventMethods<crate::DomTypeHolder> for MouseEvent {
     /// <https://w3c.github.io/pointerevents/#dom-mouseevent-clienty>
     fn ClientY(&self) -> i32 {
         self.client_point.get().y
+    }
+
+    /// <https://w3c.github.io/pointerlock/#dom-mouseevent-movementx>
+    fn MovementX(&self) -> Finite<f64> {
+        Finite::wrap(self.movement_x.get())
+    }
+
+    /// <https://w3c.github.io/pointerlock/#dom-mouseevent-movementy>
+    fn MovementY(&self) -> Finite<f64> {
+        Finite::wrap(self.movement_y.get())
     }
 
     /// <https://drafts.csswg.org/cssom-view/#dom-mouseevent-pagex>

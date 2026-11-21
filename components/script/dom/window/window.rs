@@ -2727,6 +2727,21 @@ impl Window {
         receiver.recv().unwrap_or_default()
     }
 
+    pub(crate) fn screen_point_for_webview_point(
+        &self,
+        point: embedder_traits::WebViewPoint,
+    ) -> Point2D<i32, CSSPixel> {
+        let webview_css_point = match point {
+            embedder_traits::WebViewPoint::Device(point) => point / self.device_pixel_ratio(),
+            embedder_traits::WebViewPoint::Page(point) => point,
+        };
+        let window_origin = self.client_window().min;
+        Point2D::new(
+            window_origin.x + webview_css_point.x.round() as i32,
+            window_origin.y + webview_css_point.y.round() as i32,
+        )
+    }
+
     /// Prepares to tick animations and then does a reflow which also advances the
     /// layout animation clock.
     pub(crate) fn advance_animation_clock(&self, no_gc: &NoGC, delta: TimeDuration) {
