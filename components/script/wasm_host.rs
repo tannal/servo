@@ -120,7 +120,7 @@ fn with_app(
 }
 
 /// Global dispatcher called when a DOM event fires for a Wasm listener.
-pub fn dispatch_wasm_event(
+pub(crate) fn dispatch_wasm_event(
     cx: &mut JSContext,
     handler_id: &str,
     target: &EventTarget,
@@ -185,12 +185,12 @@ fn build_event_data(handler_id: &str, target: &EventTarget, event: &Event) -> Ev
 }
 
 /// The host state held inside the Wasmtime `Store` for one component instance.
-pub struct WasmHostState {
+pub(crate) struct WasmHostState {
     /// Refreshed at the beginning of every event/fetch callback turn.  Servo
     /// owns the `JSContext`; the guest may call DOM APIs that need it.
-    pub cx: *mut JSContext,
-    pub global_scope: DomRoot<GlobalScope>,
-    pub app_id: usize,
+    cx: *mut JSContext,
+    global_scope: DomRoot<GlobalScope>,
+    app_id: usize,
     /// Handle table for DOM resources exposed to the guest.  The guest owns
     /// handles; dropping a WIT `element` resource frees its slot.
     elements: Vec<Option<DomRoot<Node>>>,
@@ -199,7 +199,7 @@ pub struct WasmHostState {
 }
 
 impl WasmHostState {
-    pub fn new(cx: &mut JSContext, global_scope: DomRoot<GlobalScope>, app_id: usize) -> Self {
+    fn new(cx: &mut JSContext, global_scope: DomRoot<GlobalScope>, app_id: usize) -> Self {
         Self {
             cx: cx as *mut JSContext,
             global_scope,
@@ -401,13 +401,13 @@ impl HostElement for WasmHostState {
         if name == "value" {
             if let Some(input) = self.input(&self_rep) {
                 let cx = self.cx();
-                input.SetValue(cx, DOMString::from(value));
+                let _ = input.SetValue(cx, DOMString::from(value));
                 return;
             }
             if let Some(node) = self.node(&self_rep) {
                 if let Some(textarea) = node.downcast::<HTMLTextAreaElement>() {
                     let cx = self.cx();
-                    textarea.SetValue(cx, DOMString::from(value));
+                    let _ = textarea.SetValue(cx, DOMString::from(value));
                 }
             }
         } else if name == "checked" {
@@ -751,7 +751,7 @@ fn component_cache_key(bytes: &[u8]) -> String {
 }
 
 /// Runner entrypoint invoked from `HTMLScriptElement::execute`.
-pub fn run_wasm_component(
+pub(crate) fn run_wasm_component(
     cx: &mut JSContext,
     wasm_bytes: &[u8],
     global_scope: DomRoot<GlobalScope>,

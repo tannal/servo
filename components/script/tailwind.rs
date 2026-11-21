@@ -20,7 +20,7 @@ use js::context::JSContext;
 use script_bindings::codegen::GenericUnionTypes::{
     StringOrElementCreationOptions, TrustedHTMLOrTrustedScriptOrTrustedScriptURLOrString,
 };
-use servo_wasm::{COMPONENT_REGISTRY, SERVO_WASM_ENGINE};
+use servo_wasm::SERVO_WASM_ENGINE;
 use wasmtime::component::{Component, HasSelf, Linker};
 use wasmtime::Store;
 
@@ -113,7 +113,7 @@ fn ensure_global(global: &GlobalScope) -> DomRoot<GlobalScope> {
 }
 
 /// Instantiate `railwind.wasm` and make its compiler available to the document.
-pub fn register_component(
+pub(crate) fn register_component(
     cx: &mut JSContext,
     component: &Arc<Component>,
     global: DomRoot<GlobalScope>,
@@ -129,7 +129,7 @@ pub fn register_component(
 }
 
 /// Record class tokens written by an application component.
-pub fn note_classes(global: &GlobalScope, classes: &str) {
+pub(crate) fn note_classes(global: &GlobalScope, classes: &str) {
     let added = SEEN.with(|seen| {
         let mut seen = seen.borrow_mut();
         let mut added = false;
@@ -151,7 +151,7 @@ pub fn note_classes(global: &GlobalScope, classes: &str) {
 /// This is called synchronously after every guest entry point (run, event,
 /// fetch completion) and when railwind itself is registered.  Keeping it off
 /// the task queue makes styling deterministic during document loading.
-pub fn flush(cx: &mut JSContext) {
+pub(crate) fn flush(cx: &mut JSContext) {
     let dirty = DIRTY.with(|dirty| dirty.replace(false));
     if !dirty && STYLE.with(|style| style.borrow().is_some()) {
         return;
@@ -186,16 +186,16 @@ pub fn flush(cx: &mut JSContext) {
         None => {
             let style = match document.CreateElement(
                 cx,
-                DOMString::from("style"),
+                DOMString::from_static("style"),
                 StringOrElementCreationOptions::String(DOMString::new()),
             ) {
                 Ok(style) => style,
                 Err(_) => return,
             };
             let id = TrustedHTMLOrTrustedScriptOrTrustedScriptURLOrString::String(
-                DOMString::from("servo-tailwind"),
+                DOMString::from_static("servo-tailwind"),
             );
-            let _ = style.SetAttribute(cx, DOMString::from("id"), id);
+            let _ = style.SetAttribute(cx, DOMString::from_static("id"), id);
             if let Some(head) = document.GetHead() {
                 let _ = head.upcast::<Node>().AppendChild(cx, style.upcast::<Node>());
             } else if let Some(body) = document.GetBody() {
@@ -206,7 +206,7 @@ pub fn flush(cx: &mut JSContext) {
         },
     };
 
-    style.upcast::<Node>().SetTextContent(cx, Some(DOMString::from(stylesheet)));
+    let _ = style.upcast::<Node>().SetTextContent(cx, Some(DOMString::from(stylesheet)));
 }
 
 fn collect_document_classes(
@@ -217,7 +217,7 @@ fn collect_document_classes(
     let mut stack: Vec<DomRoot<Node>> = vec![DomRoot::from_ref(root.upcast::<Node>())];
     while let Some(node) = stack.pop() {
         if let Some(element) = node.downcast::<Element>() {
-            if let Some(class) = element.GetAttribute(cx, DOMString::from("class")) {
+            if let Some(class) = element.GetAttribute(cx, DOMString::from_static("class")) {
                 for token in class.to_string().split_whitespace() {
                     classes.insert(token.to_string());
                 }
@@ -243,8 +243,3 @@ fn compile(classes: &[String]) -> wasmtime::Result<String> {
     })
 }
 
-/// Compile a class string directly.  Kept for future use by tests and tools.
-pub fn compile_classes(classes: &str) -> wasmtime::Result<String> {
-    let candidates: Vec<String> = classes.split_whitespace().map(str::to_string).collect();
-    compile(&candidates)
-}

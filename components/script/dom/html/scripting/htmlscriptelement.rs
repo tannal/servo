@@ -898,7 +898,6 @@ impl HTMLScriptElement {
                     );
                 },
                 ScriptType::WasmComponent => {
-                    let script = DomRoot::from_ref(self);
                     // Reuse Servo's fetch pipeline to fetch the raw bytes asynchronously
                     fetch_a_classic_script(
                         self,
