@@ -140,12 +140,23 @@ loop.  It also means long LLM generations cannot freeze rendering or input.
 
 ## 5. Networking
 
-`servo:dom/fetch` is deliberately minimal:
+`servo:dom/fetch` supports both `http://` and `https://`:
 
-- `http://` only for now (enough for a local Ollama server);
+- plain HTTP uses the small in-tree client and is used for local model servers
+  (Ollama, llama.cpp) without surprising proxy behaviour;
+- HTTPS is delegated to `ureq` with the platform root store, so hosted
+  OpenAI-compatible APIs (DeepSeek, boat.dev-style gateways, OpenRouter, …) can
+  be reached from a page served over HTTPS;
+- conventional `HTTPS_PROXY` / `https_proxy` (and
+  `SERVO_WASM_HTTPS_PROXY`) are honoured for HTTPS only;
 - a 300 s read timeout for long generations;
 - `Content-Length` and `Transfer-Encoding: chunked` responses;
 - a 64 MiB response cap.
+
+The demo app keeps provider policy in the guest: it chooses DeepSeek when
+served from `tannal.github.io`, Ollama when served from localhost, and always
+lets the user edit the base URL, model and API key.  The host does not know
+about providers and never logs request headers.
 
 A browser-grade implementation must route this through Servo's `net`/fetch
 stack with the document's origin, CORS preflight rules, redirect policy,

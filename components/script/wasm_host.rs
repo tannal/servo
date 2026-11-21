@@ -620,6 +620,11 @@ impl DocumentHost for WasmHostState {
         Ok(Resource::new_own(id))
     }
 
+    fn get_url(&mut self) -> String {
+        let document = self.global_scope.as_window().Document();
+        document.URL().to_string()
+    }
+
     fn get_head(&mut self) -> Result<Resource<wit_dom::servo::dom::document::Element>, String> {
         let document = self.global_scope.as_window().Document();
         let head = document

@@ -36,9 +36,12 @@ pub fn fetch_blocking(
     body: Option<Vec<u8>>,
 ) -> Result<HttpResponse, String> {
     let parsed = Url::parse(url).map_err(|error| format!("invalid URL: {error}"))?;
+    if parsed.scheme() == "https" {
+        return fetch_https(url, method, headers, body);
+    }
     if parsed.scheme() != "http" {
         return Err(format!(
-            "unsupported URL scheme '{}': the first WebAssembly networking implementation only supports http://",
+            "unsupported URL scheme '{}': only http:// and https:// are supported",
             parsed.scheme()
         ));
     }
@@ -227,4 +230,63 @@ fn read_chunked(reader: &mut impl BufRead) -> Result<Vec<u8>, String> {
             .map_err(|error| format!("could not read chunk terminator: {error}"))?;
     }
     Ok(body)
+}
+
+
+/// HTTPS requests are delegated to `ureq`, which handles TLS roots and
+/// redirects.  The browser's own network stack is still the long-term home for
+/// this capability; this keeps the experimental component runtime usable with
+/// hosted OpenAI-compatible endpoints.
+fn fetch_https(
+    url: &str,
+    method: &str,
+    headers: Vec<(String, String)>,
+    body: Option<Vec<u8>>,
+) -> Result<HttpResponse, String> {
+    let mut builder = ureq::AgentBuilder::new()
+        .timeout_connect(Duration::from_secs(10))
+        .timeout_read(Duration::from_secs(300))
+        .timeout_write(Duration::from_secs(30))
+        .redirects(5);
+
+    // Respect the conventional proxy variables for HTTPS only.  Plain HTTP is
+    // used for local model servers and deliberately bypasses proxies.
+    for key in ["SERVO_WASM_HTTPS_PROXY", "HTTPS_PROXY", "https_proxy"] {
+        if let Ok(proxy) = std::env::var(key) {
+            if !proxy.is_empty() {
+                let proxy = ureq::Proxy::new(&proxy)
+                    .map_err(|error| format!("invalid HTTPS proxy: {error}"))?;
+                builder = builder.proxy(proxy);
+                break;
+            }
+        }
+    }
+
+    let agent = builder.build();
+    let mut request = agent.request(method, url);
+    for (name, value) in headers {
+        request = request.set(&name, &value);
+    }
+    let response = match body {
+        Some(body) if !body.is_empty() => request.send_bytes(&body),
+        _ => request.call(),
+    };
+    let (status, response) = match response {
+        Ok(response) => (response.status(), response),
+        Err(ureq::Error::Status(status, response)) => (status, response),
+        Err(ureq::Error::Transport(error)) => {
+            return Err(format!("HTTPS request failed: {error}"));
+        },
+    };
+
+    let mut body = Vec::new();
+    response
+        .into_reader()
+        .take(MAX_BODY_BYTES as u64 + 1)
+        .read_to_end(&mut body)
+        .map_err(|error| format!("could not read response body: {error}"))?;
+    if body.len() > MAX_BODY_BYTES {
+        return Err("response body is too large".to_string());
+    }
+    Ok(HttpResponse { status, body })
 }

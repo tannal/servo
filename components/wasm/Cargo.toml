@@ -8,6 +8,7 @@ publish = false
 
 [dependencies]
 url = { workspace = true }
+ureq = { version = "2.12", default-features = false, features = ["tls"] }
 wasmtime = { workspace = true, features = ["component-model"] }
 
 [lints]
