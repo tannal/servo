@@ -53,7 +53,8 @@ use crate::layout_box_base::{IndependentFormattingContextLayoutResult, LayoutBox
 use crate::positioned::PositioningContext;
 use crate::sizing::InlineContentSizesResult;
 use crate::style_ext::{DisplayGeneratingBox, DisplayInside, LayoutStyle};
-use crate::{ConstraintSpace, ContainingBlock, PropagatedBoxTreeData};
+use crate::PropagatedBoxTreeData;
+use crate::containing_block::{ConstraintSpace, ContainingBlock, ContainingBlockSize};
 
 pub(crate) use self::mfrac::MathFractionBlock;
 pub(crate) use self::mpadded::MathPaddedBlock;
@@ -520,10 +521,10 @@ impl MathLevelBox {
             ConstraintSpace::new(crate::sizing::SizeConstraint::default(), parent_style, None);
         let sizes = self.inline_content_sizes(layout_context, &constraint_space);
         let child_containing_block = ContainingBlock {
-            size: crate::ContainingBlockSize {
-                inline: sizes.sizes.max_content,
-                block: containing_block.size.block,
-            },
+            size: ContainingBlockSize::new(
+                sizes.sizes.max_content,
+                containing_block.maybe_quirky_block_size(),
+            ),
             style: parent_style,
         };
         self.layout(

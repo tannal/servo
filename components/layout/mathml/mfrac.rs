@@ -52,7 +52,7 @@ use crate::mathml::{
 use crate::positioned::PositioningContext;
 use crate::sizing::{ContentSizes, InlineContentSizesResult, Size};
 use crate::style_ext::LayoutStyle;
-use crate::{ConstraintSpace, ContainingBlock};
+use crate::containing_block::{ConstraintSpace, ContainingBlock};
 
 /// Baseline shifts after enforcing the font's minimum clearances.
 #[derive(Debug, Clone, Copy)]
@@ -459,7 +459,7 @@ impl MathFractionBlock {
             + physical_border.right;
 
         let available_inline_size =
-            (containing_block.size.inline - padding_border_inline).max(Au::zero());
+            (containing_block.inline_size() - padding_border_inline).max(Au::zero());
         let children_width = numerator_output
             .metrics
             .size
@@ -504,7 +504,7 @@ impl MathFractionBlock {
             LogicalAxis::Block,
             Size::FitContent,
             Au::zero,
-            containing_block.size.block.to_definite(),
+            containing_block.block_size(),
             || natural_block.into(),
             false,
         );

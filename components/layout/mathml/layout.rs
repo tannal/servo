@@ -11,7 +11,7 @@
 use app_units::Au;
 use style::Zero;
 
-use crate::ContainingBlock;
+use crate::containing_block::{ContainingBlock, ContainingBlockSize};
 use crate::formatting_contexts::Baselines;
 use crate::fragment_tree::{BoxFragment, Fragment, MathPaintInfo};
 use crate::geom::{LogicalRect, LogicalVec2};
@@ -168,7 +168,7 @@ pub(crate) struct MathLayoutCache {
 }
 
 struct MathLayoutCacheEntry {
-    containing_block_size: crate::ContainingBlockSize,
+    containing_block_size: ContainingBlockSize,
     target_size: Option<MathStretchTarget>,
     result: MathLayoutResult,
     positioning_context: crate::positioned::PositioningContext,
@@ -255,7 +255,7 @@ impl MathLayoutResult {
             },
             size: metrics.size,
         }
-        .as_physical(Some(containing_block));
+        .as_physical_deprecated(containing_block);
         let fragment = BoxFragment::new(
             base.base_fragment_info.clone(),
             base.style.clone(),

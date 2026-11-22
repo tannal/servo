@@ -167,17 +167,22 @@ impl LayoutBoxBase {
         {
             let cache = self.cached_inline_content_size.borrow();
             if let Some(cached) = cache.as_ref() {
-                let (previous_cb_block_size, result) = **cached;
+                let (previous_cb_maybe_quirky_block_size, had_quirky_block_size, result) = **cached;
                 if !result.depends_on_block_constraints
-                    || previous_cb_block_size == constraint_space.block_size
+                    || (previous_cb_maybe_quirky_block_size
+                        == constraint_space.maybe_quirky_block_size
+                        && had_quirky_block_size == constraint_space.has_quirky_block_size)
                 {
                     return result;
                 }
             }
         }
         let result = compute();
-        *self.cached_inline_content_size.borrow_mut() =
-            Some(Box::new((constraint_space.block_size, result)));
+        *self.cached_inline_content_size.borrow_mut() = Some(Box::new((
+            constraint_space.maybe_quirky_block_size,
+            constraint_space.has_quirky_block_size,
+            result,
+        )));
         result
     }
 

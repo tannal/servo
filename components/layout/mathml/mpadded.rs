@@ -37,7 +37,7 @@ use crate::mathml::{
 use crate::positioned::PositioningContext;
 use crate::sizing::{ContentSizes, InlineContentSizesResult};
 use crate::style_ext::LayoutStyle;
-use crate::{ConstraintSpace, ContainingBlock};
+use crate::containing_block::{ConstraintSpace, ContainingBlock};
 use style::Zero;
 
 /// One styled wrapper around inferred-row contents, with independent declared

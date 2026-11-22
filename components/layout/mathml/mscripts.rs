@@ -32,7 +32,7 @@ use crate::mathml::{
 use crate::positioned::PositioningContext;
 use crate::sizing::{ContentSizes, InlineContentSizesResult, Size};
 use crate::style_ext::LayoutStyle;
-use crate::{ConstraintSpace, ContainingBlock};
+use crate::containing_block::{ConstraintSpace, ContainingBlock};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, MallocSizeOf)]
 pub(crate) enum MathScriptsKind {
@@ -588,7 +588,7 @@ impl MathScriptsBlock {
             LogicalAxis::Inline,
             Size::FitContent,
             Au::zero,
-            Some(containing_block.size.inline),
+            Some(containing_block.inline_size()),
             || natural_width.into(),
             false,
         );
@@ -597,7 +597,7 @@ impl MathScriptsBlock {
             LogicalAxis::Block,
             Size::FitContent,
             Au::zero,
-            containing_block.size.block.to_definite(),
+            containing_block.block_size(),
             || natural_block.into(),
             false,
         );

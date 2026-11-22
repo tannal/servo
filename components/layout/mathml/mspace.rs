@@ -34,7 +34,7 @@ use crate::mathml::{MathBoxMetrics, MathLayoutResult, MathStretchTarget};
 use crate::positioned::PositioningContext;
 use crate::sizing::{ContentSizes, InlineContentSizesResult};
 use crate::style_ext::LayoutStyle;
-use crate::{ConstraintSpace, ContainingBlock};
+use crate::containing_block::{ConstraintSpace, ContainingBlock};
 
 /// Explicit empty notation with declared dimensions and an alphabetic baseline.
 /// It has no glyph or operands, but its ordinary CSS box can still paint.
@@ -223,7 +223,7 @@ impl MathSpaceBlock {
         let width = self
             .width
             .as_ref()
-            .map(|lp| lp.to_used_value(containing_block.size.inline))
+            .map(|lp| lp.to_used_value(containing_block.inline_size()))
             .unwrap_or(Au::zero())
             .max(Au::zero());
         // For height and depth: percentage basis is 0 per MathML Core §3.2.3

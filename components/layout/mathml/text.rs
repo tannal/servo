@@ -27,13 +27,13 @@ use crate::dom_traversal::NodeAndStyleInfo;
 use crate::flow::IndependentFloatOrAtomicLayoutResult;
 use crate::formatting_contexts::IndependentFormattingContext;
 use crate::fragment_tree::Fragment;
-use crate::geom::{AuOrAuto, LogicalVec2, ToLogical};
+use crate::containing_block::{ConstraintSpace, ContainingBlock};
+use crate::geom::{AuOrAuto, LogicalSides, LogicalVec2};
 use crate::layout_box_base::LayoutBoxBase;
 use crate::mathml::{MathBoxMetrics, MathLayoutResult, MathStretchTarget};
 use crate::positioned::{PositioningContext, PositioningContextLength};
 use crate::sizing::InlineContentSizesResult;
 use crate::style_ext::{ComputedValuesExt, PaddingBorderMargin};
-use crate::{ConstraintSpace, ContainingBlock};
 
 /// Extract the single character of a simple text-only token element (e.g. `<mi>x</mi>`).
 /// Returns `None` if the token has element children or more than one non-whitespace char.
@@ -119,7 +119,8 @@ impl MathTextBlock {
             containing_block,
         );
         let writing_mode = containing_block.style.writing_mode;
-        let content_size = fragment.content_rect().size.to_logical(writing_mode);
+        let content_size =
+            LogicalVec2::from_physical_size(&fragment.content_rect().size, writing_mode);
 
         let content_baseline = if self.is_mtable {
             // MathML Core §3.5: an mtable's baseline is centered on the math axis.
@@ -140,14 +141,12 @@ impl MathTextBlock {
             baselines.first.unwrap_or(content_size.block)
         };
 
-        let padding = fragment.padding.to_logical(writing_mode);
-        let border = fragment.border.to_logical(writing_mode);
+        let padding = LogicalSides::from_physical(&fragment.padding, writing_mode);
+        let border = LogicalSides::from_physical(&fragment.border, writing_mode);
         let pbm = PaddingBorderMargin {
             padding,
             border,
-            margin: fragment
-                .margin
-                .to_logical(writing_mode)
+            margin: LogicalSides::from_physical(&fragment.margin, writing_mode)
                 .map(|value| AuOrAuto::LengthPercentage(*value)),
             padding_border_sums: (padding + border).sum(),
         };

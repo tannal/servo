@@ -47,7 +47,7 @@ use crate::mathml::{
 use crate::positioned::PositioningContext;
 use crate::sizing::{ComputeInlineContentSizes, InlineContentSizesResult};
 use crate::style_ext::LayoutStyle;
-use crate::{ConstraintSpace, ContainingBlock};
+use crate::containing_block::{ConstraintSpace, ContainingBlock};
 
 /// Collect text content and check whether the `<mo>` has ONLY text children.
 /// Per MathML Core §3.2.4.1, an `<mo>` has inline stretch axis only if it
@@ -546,7 +546,7 @@ impl MathOperatorBlock {
             }
         }
         if natural_inline_size == Au::zero() {
-            natural_inline_size = containing_block.size.inline;
+            natural_inline_size = containing_block.inline_size();
         }
         let natural_baseline = result.baselines.first.unwrap_or(result.content_block_size);
         let mut metrics = MathBoxMetrics::new(
