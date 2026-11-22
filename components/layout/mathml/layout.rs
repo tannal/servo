@@ -150,7 +150,7 @@ impl MathBoxMetrics {
 
 /// A completed layout, with measurements available without traversing fragments.
 /// Paint-only information remains on the ordinary BoxFragment's rare data.
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub(crate) struct MathLayoutResult {
     /// Accepted fragment subtree; only the caller decides its placement among siblings.
     pub fragments: Vec<Fragment>,
@@ -259,7 +259,7 @@ impl MathLayoutResult {
         let fragment = BoxFragment::new(
             base.base_fragment_info.clone(),
             base.style.clone(),
-            children,
+            crate::fragment_tree::FragmentChildren::PhysicalDeprecated(children),
             content_rect,
             pbm.padding.to_physical(writing_mode),
             pbm.border.to_physical(writing_mode),

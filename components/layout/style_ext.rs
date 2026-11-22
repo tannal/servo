@@ -77,6 +77,18 @@ impl DisplayGeneratingBox {
         info: &NodeAndStyleInfo,
     ) -> Self {
         if matches!(contents, Contents::NonReplaced(_)) {
+            if let DisplayGeneratingBox::OutsideInside {
+                outside,
+                inside: DisplayInside::Flow { .. } | DisplayInside::FlowRoot { .. },
+            } = self
+                && layout_api::LayoutNode::as_element(&info.node)
+                    .is_some_and(|el| style::dom::TElement::is_mathml_element(&el))
+            {
+                return DisplayGeneratingBox::OutsideInside {
+                    outside: *outside,
+                    inside: DisplayInside::Math,
+                };
+            }
             return *self;
         }
         // The spec quotes below only mention replaced elements, but browsers agree
@@ -804,13 +816,6 @@ impl ComputedValuesExt for ComputedValues {
             return true;
         }
 
-        // https://w3c.github.io/mathml-core/#stacking-contexts
-        // A MathML element with computed style display: block math
-        // or display: inline math generates a new stacking context. 
-        if self.get_box().display.inside() == stylo::DisplayInside::Math {
-            return true;
-        }
-
         // Fixed position and sticky position always create stacking contexts.
         // Note `will-change: position` is handled above by `STACKING_CONTEXT_UNCONDITIONAL`.
         if matches!(
@@ -1415,10 +1420,6 @@ impl From<stylo::Display> for Display {
             },
             stylo::DisplayInside::FlowRoot => DisplayInside::FlowRoot {
                 is_list_item: packed.is_list_item(),
-            },
-
-            stylo::DisplayInside::Math => DisplayInside::Math {
-
             },
             stylo::DisplayInside::Flex => DisplayInside::Flex,
             stylo::DisplayInside::Grid => DisplayInside::Grid,

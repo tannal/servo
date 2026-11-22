@@ -5,7 +5,7 @@
 @namespace url(http://www.w3.org/1998/Math/MathML);
 
 * {
-  display: block math;
+  display: block;
   font-size: math;
   writing-mode: horizontal-tb !important;
 }
@@ -20,20 +20,19 @@ math {
   font-size: inherit;
   font-style: normal;
   font-weight: normal;
-  display: inline math;
-  math-shift: normal;
+  display: inline-block;
   math-style: compact;
   math-depth: 0;
   text-rendering: optimizeLegibility;
 }
 
 math[display="block" i] {
-  display: block math;
+  display: block;
   math-style: normal;
 }
 
 math[display="inline" i] {
-  display: inline math;
+  display: inline-block;
   math-style: compact;
 }
 

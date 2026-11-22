@@ -52,8 +52,10 @@ impl<'dom> NodeAndStyleInfo<'dom> {
         // still support these pseudo-elements.
         // https://w3c.github.io/mathml-core/#css-styling
         if matches!(pseudo_element_type, PseudoElement::FirstLetter)
-            && self.style.get_box().display.inside()
-                == style::values::specified::box_::DisplayInside::Math
+            && self
+                .node
+                .as_element()
+                .is_some_and(|el| style::dom::TElement::is_mathml_element(&el))
         {
             return None;
         }

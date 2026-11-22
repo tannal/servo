@@ -10,7 +10,6 @@
 
 use std::sync::Arc;
 
-use app_units::Au;
 use layout_api::LayoutNode;
 use malloc_size_of_derive::MallocSizeOf;
 use script::layout_dom::ServoLayoutNode;
@@ -191,9 +190,14 @@ impl MathTextBlock {
         {
             child_positioning_context.layout_collected_children(layout_context, &mut fragment);
         }
+        let child_logical_rect = crate::geom::LogicalRect::from_physical_deprecated(
+            fragment.content_rect(),
+            containing_block,
+        );
         let fragment = Fragment::Box(Arc::new(fragment));
         child_positioning_context.adjust_static_position_of_hoisted_fragments(
-            &fragment,
+            &child_logical_rect,
+            writing_mode,
             PositioningContextLength::zero(),
         );
         positioning_context.append(child_positioning_context);

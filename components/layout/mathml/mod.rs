@@ -153,7 +153,8 @@ impl<'a, 'dom> TraversalHandler<'dom> for MathTraversalBuilder<'a, 'dom> {
                         ArcRefCell::new(MathLevelBox::Operator(ArcRefCell::new(operator_block)))
                     },
                     block_container => {
-                        let bfc = BlockFormattingContext::from_block_container(block_container);
+                        let bfc =
+                            BlockFormattingContext::from_block_container(block_container, false, None);
                         let contents = IndependentFormattingContextContents::Flow(bfc);
                         let independent_fc = IndependentFormattingContext::new(
                             LayoutBoxBase::new(info.into(), info.style.clone()),
@@ -180,7 +181,8 @@ impl<'a, 'dom> TraversalHandler<'dom> for MathTraversalBuilder<'a, 'dom> {
                 }
 
                 let block_container = block_builder.finish();
-                let bfc = BlockFormattingContext::from_block_container(block_container);
+                let bfc =
+                    BlockFormattingContext::from_block_container(block_container, false, None);
                 let contents = IndependentFormattingContextContents::Flow(bfc);
 
                 let independent_fc = IndependentFormattingContext::new(
@@ -319,7 +321,7 @@ impl MathContainer {
             last: Some(output.metrics.ascent()),
         };
         IndependentFormattingContextLayoutResult {
-            fragments: output.fragments,
+            fragments: crate::fragment_tree::FragmentChildren::PhysicalDeprecated(output.fragments),
             content_block_size: output.metrics.size.block,
             content_inline_size_for_table: None,
             baselines,

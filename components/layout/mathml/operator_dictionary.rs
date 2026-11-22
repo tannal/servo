@@ -62,7 +62,7 @@ impl OperatorDictionaryEntry {
         if eighteenths == 0 {
             Au(0)
         } else {
-            Au(((font_size.0 as i64 * eighteenths as i64) + 9) / 18)
+            Au((((font_size.0 as i64 * eighteenths as i64) + 9) / 18) as i32)
         }
     }
 }

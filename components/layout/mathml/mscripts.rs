@@ -16,8 +16,7 @@ use style::Zero;
 use style::context::SharedStyleContext;
 use style::logical_geometry::LogicalAxis;
 use style::properties::ComputedValues;
-use style::values::computed::font::{MathShift, MathStyle};
-use web_atoms::local_name;
+use style::values::computed::font::MathStyle;
 
 use super::{MathLevelBox, MathRowBlock};
 use crate::cell::ArcRefCell;
@@ -354,7 +353,7 @@ impl MathScriptsBlock {
 
             let style = &self.base().style;
             let is_display = style.get_font().math_style == MathStyle::Normal;
-            let is_cramped = style.get_font().math_shift == MathShift::Compact;
+            let is_cramped = false;
             let font_size = Au::from_f32_px(style.get_font().font_size.computed_size().px());
             let font_group = layout_context.font_context.font_group(style.clone_font());
             let font = font_group.first(&layout_context.font_context);
@@ -452,7 +451,7 @@ impl MathScriptsBlock {
         let style = &self.base().style;
         let is_rtl = !style.writing_mode.is_bidi_ltr();
         let is_display = style.get_font().math_style == MathStyle::Normal;
-        let is_cramped = style.get_font().math_shift == MathShift::Compact;
+        let is_cramped = false;
         let font_size = Au::from_f32_px(style.get_font().font_size.computed_size().px());
 
         let layout_style = LayoutStyle::Default(style);

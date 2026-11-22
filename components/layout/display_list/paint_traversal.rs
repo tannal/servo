@@ -8,7 +8,6 @@ use std::sync::Arc;
 use app_units::Au;
 use servo_base::id::ScrollTreeNodeId;
 use style::values::computed::TextDecorationLine;
-use style::values::specified::{Overflow, WillChangeBits, box_ as stylo};
 
 use crate::display_list::{
     ClipId, ContainerTimingRootChain, ContainerTimingRoots, FragmentTextDecoration,
@@ -693,8 +692,7 @@ impl TraversalState {
             } else {
                 self.containing_element_tag
             },
-            is_inside_math: self.is_inside_math
-                || style.get_box().display.inside() == stylo::DisplayInside::Math,
+            is_inside_math: self.is_inside_math || box_fragment.math_paint_info().is_some(),
         }
     }
 

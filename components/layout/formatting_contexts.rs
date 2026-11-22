@@ -4,7 +4,7 @@
 
 use app_units::Au;
 use atomic_refcell::AtomicRefCell;
-use layout_api::{LayoutElement, LayoutNode};
+use layout_api::LayoutNode;
 use malloc_size_of_derive::MallocSizeOf;
 use script::layout_dom::{ServoDangerousStyleElement, ServoLayoutNode};
 use servo_arc::Arc;
@@ -25,7 +25,7 @@ use crate::flow::{BlockFormattingContext, ContentAlignment};
 use crate::fragment_tree::{BaseFragmentInfo, FragmentFlags};
 use crate::geom::LogicalVec2;
 use crate::layout_box_base::{IndependentFormattingContextLayoutResult, LayoutBoxBase};
-use crate::mathml::{MathContainer, MathRowBlock};
+use crate::mathml::MathContainer;
 use crate::positioned::{LayoutRootLayoutInputs, PositioningContext};
 use crate::replaced::ReplacedContents;
 use crate::sizing::{

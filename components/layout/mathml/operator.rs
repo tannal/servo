@@ -537,7 +537,13 @@ impl MathOperatorBlock {
         );
         positioning_context.append(ifc_positioning_context);
 
-        let fragments = result.fragments;
+        let fragments = result.fragments.into_physical_fragments(
+            style.writing_mode,
+            crate::geom::LogicalVec2 {
+                inline: containing_block.inline_size(),
+                block: result.content_block_size,
+            },
+        );
         let mut natural_inline_size = Au::zero();
         for frag in &fragments {
             if let Some(base) = frag.base() {
