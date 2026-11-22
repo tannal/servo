@@ -303,10 +303,6 @@ impl MathScriptsBlock {
         &self.inner_row.base
     }
 
-    pub(crate) fn base_mut(&mut self) -> &mut LayoutBoxBase {
-        &mut self.inner_row.base
-    }
-
     pub(crate) fn operator_properties(&self) -> Option<MathOperatorProperties> {
         if let Some(ref base) = self.base_child {
             return base.borrow().operator_properties();

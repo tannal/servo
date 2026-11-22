@@ -163,10 +163,6 @@ impl MathRadicalBlock {
         &self.inner_row.base
     }
 
-    pub(crate) fn base_mut(&mut self) -> &mut LayoutBoxBase {
-        &mut self.inner_row.base
-    }
-
     pub(crate) fn is_valid(&self) -> bool {
         !self.is_mroot || (self.base_child.is_some() && self.index_child.is_some())
     }

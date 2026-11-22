@@ -307,17 +307,6 @@ impl MathFractionBlock {
         &self.inner_row.base
     }
 
-    /// Mutable access to that same base for existing box-tree lifecycle operations.
-    pub(crate) fn base_mut(&mut self) -> &mut LayoutBoxBase {
-        &mut self.inner_row.base
-    }
-
-    #[inline]
-    /// Whether construction supplied both required in-flow operands.
-    pub(crate) fn is_valid(&self) -> bool {
-        self.fraction_children().is_some()
-    }
-
     /// Return operands as a pair so layout cannot proceed with only one operand.
     fn fraction_children(&self) -> Option<(&ArcRefCell<MathLevelBox>, &ArcRefCell<MathLevelBox>)> {
         self.numerator.as_ref().zip(self.denominator.as_ref())

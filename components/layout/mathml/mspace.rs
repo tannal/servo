@@ -106,16 +106,6 @@ impl MathSpaceBlock {
         }
     }
 
-    /// Borrow the styled identity shared with normal fragment construction.
-    pub(crate) fn base(&self) -> &LayoutBoxBase {
-        &self.base
-    }
-
-    /// Mutable styled-base access for existing tree lifecycle operations.
-    pub(crate) fn base_mut(&mut self) -> &mut LayoutBoxBase {
-        &mut self.base
-    }
-
     /// Recompute font-relative dimension attributes after a style repair.
     pub(crate) fn repair_style(
         &mut self,
