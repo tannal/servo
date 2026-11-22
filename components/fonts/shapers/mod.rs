@@ -29,6 +29,8 @@ pub(crate) use harfbuzz::Shaper as HarfBuzzShaper;
 #[cfg(feature = "harfrust")]
 mod harfrust;
 #[cfg(feature = "harfrust")]
+mod math_table;
+#[cfg(feature = "harfrust")]
 pub(crate) use harfrust::Shaper as HarfRustShaper;
 
 #[cfg(all(feature = "harfbuzz", feature = "harfrust"))]

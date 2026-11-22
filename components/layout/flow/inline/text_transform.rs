@@ -297,8 +297,20 @@ impl<'a> TextTransformationIterator<'a> {
         // > preserved white space.
 
         let case_map_iterator = match text_transform.case() {
-            TextTransformCase::None | TextTransformCase::MathAuto => {
+            TextTransformCase::None => {
                 Box::new(iterator) as Box<dyn Iterator<Item = CharacterTransformIteration>>
+            },
+            TextTransformCase::MathAuto => {
+                // https://w3c.github.io/mathml-core/#new-text-transform-values
+                let mut text_chars = text.chars();
+                let single = text_chars.next().filter(|_| text_chars.next().is_none());
+                if let Some(mapped) = single.and_then(math_italic_transform) {
+                    Box::new(simple_case_transform_iterator(iterator, move |_| {
+                        CharacterTransformIteration::one_to_one(mapped)
+                    }))
+                } else {
+                    Box::new(iterator) as Box<dyn Iterator<Item = CharacterTransformIteration>>
+                }
             },
             TextTransformCase::Lowercase => {
                 Box::new(simple_case_transform_iterator(iterator, |character| {
@@ -368,6 +380,32 @@ fn simple_case_transform_iterator(
             iteration
         }
     })
+}
+
+/// MathML Core §3.2.1.1 / Unicode Mathematical Italic single-character mapping for
+/// `text-transform: math-auto`.
+/// <https://w3c.github.io/mathml-core/#italic-mappings>
+pub(crate) fn math_italic_transform(character: char) -> Option<char> {
+    match character {
+        'A'..='Z' => char::from_u32(0x1D434 + (character as u32 - 'A' as u32)),
+        'h' => Some('\u{210E}'), // PLANCK CONSTANT
+        'a'..='z' => char::from_u32(0x1D44E + (character as u32 - 'a' as u32)),
+        '\u{0131}' => Some('\u{1D6A4}'), // dotless i
+        '\u{0237}' => Some('\u{1D6A5}'), // dotless j
+        '\u{0391}'..='\u{03A1}' => char::from_u32(0x1D6E2 + (character as u32 - 0x0391)),
+        '\u{03F4}' => Some('\u{1D6F3}'), // Greek Capital Theta Symbol
+        '\u{03A3}'..='\u{03A9}' => char::from_u32(0x1D6F4 + (character as u32 - 0x03A3)),
+        '\u{2207}' => Some('\u{1D6FB}'), // Nabla
+        '\u{03B1}'..='\u{03C9}' => char::from_u32(0x1D6FC + (character as u32 - 0x03B1)),
+        '\u{2202}' => Some('\u{1D715}'), // Partial Differential
+        '\u{03F5}' => Some('\u{1D716}'), // Greek Lunate Epsilon Symbol
+        '\u{03D1}' => Some('\u{1D717}'), // Greek Theta Symbol
+        '\u{03F0}' => Some('\u{1D718}'), // Greek Kappa Symbol
+        '\u{03D5}' => Some('\u{1D719}'), // Greek Phi Symbol
+        '\u{03F1}' => Some('\u{1D71A}'), // Greek Rho Symbol
+        '\u{03D6}' => Some('\u{1D71B}'), // Greek Pi Symbol
+        _ => None,
+    }
 }
 
 /// From <https://drafts.csswg.org/css-text-4/#typographic-letter-unit>:

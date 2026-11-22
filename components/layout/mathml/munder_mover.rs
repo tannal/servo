@@ -520,21 +520,23 @@ impl MathUnderOverBlock {
 
         let base_ascent = base_out.metrics.ascent();
         let base_descent = base_out.metrics.descent();
+        let base_ink_ascent = base_out.metrics.ink_ascent;
+        let base_ink_descent = base_out.metrics.ink_descent;
         let base_ic = base_out.metrics.italic_correction;
 
-        // 2. Vertical shifts for over and under.
+        // 2. Vertical shifts for over and under (using ink extents for clearance).
         let (over_shift_up, total_ascent) = if let Some(ref over) = over_out {
             let over_ascent = over.metrics.ascent();
-            let over_descent = over.metrics.descent();
+            let over_ink_descent = over.metrics.ink_descent;
             if is_accent {
-                let shift = base_ascent.max(params.accent_base_height)
+                let shift = base_ink_ascent.max(params.accent_base_height)
                     + params.overbar_vertical_gap
-                    + over_descent;
+                    + over_ink_descent;
                 let top = shift + over_ascent + params.overbar_extra_ascender;
                 (shift, base_ascent.max(top))
             } else {
-                let shift = (base_ascent + params.upper_limit_baseline_rise_min)
-                    .max(base_ascent + params.upper_limit_gap_min + over_descent);
+                let shift = (base_ink_ascent + params.upper_limit_baseline_rise_min)
+                    .max(base_ink_ascent + params.upper_limit_gap_min + over_ink_descent);
                 let top = shift + over_ascent + params.overbar_extra_ascender;
                 (shift, base_ascent.max(top))
             }
@@ -543,15 +545,15 @@ impl MathUnderOverBlock {
         };
 
         let (under_shift_down, total_descent) = if let Some(ref under) = under_out {
-            let under_ascent = under.metrics.ascent();
             let under_descent = under.metrics.descent();
+            let under_ink_ascent = under.metrics.ink_ascent;
             if is_accentunder {
-                let shift = base_descent + params.underbar_vertical_gap + under_ascent;
+                let shift = base_ink_descent + params.underbar_vertical_gap + under_ink_ascent;
                 let bottom = shift + under_descent + params.underbar_extra_descender;
                 (shift, base_descent.max(bottom))
             } else {
-                let shift = (base_descent + params.lower_limit_baseline_drop_min)
-                    .max(base_descent + params.lower_limit_gap_min + under_ascent);
+                let shift = (base_ink_descent + params.lower_limit_baseline_drop_min)
+                    .max(base_ink_descent + params.lower_limit_gap_min + under_ink_ascent);
                 let bottom = shift + under_descent + params.underbar_extra_descender;
                 (shift, base_descent.max(bottom))
             }
@@ -703,8 +705,8 @@ impl MathUnderOverBlock {
         let base_ic = base_out.metrics.italic_correction;
 
         let (sub_shift, sup_shift) = params.compute_shifts(
-            base_ascent,
-            base_descent,
+            base_out.metrics.ink_ascent,
+            base_out.metrics.ink_descent,
             sub_out.as_ref().map(|o| &o.metrics),
             sup_out.as_ref().map(|o| &o.metrics),
         );

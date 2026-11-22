@@ -10,6 +10,7 @@ use read_fonts::types::GlyphId;
 use skrifa::Font as SkrifaFont;
 
 use super::{GlyphShapingResult, unicode_script_to_iso15924_tag};
+use crate::font::FontTableMethods;
 use crate::{
     Font, ShapedGlyph, ShapedText, ShapingFlags, ShapingOptions, fixed_to_float, float_to_fixed,
 };
@@ -93,16 +94,22 @@ impl GlyphShapingResult for HarfrustGlyphShapingResult {
 pub(crate) struct Shaper {
     /// The `skrifa::Font` instance to use for this [`Shaper`].
     skrifa_font: SkrifaFont,
+    /// Cached raw OpenType `MATH` table bytes, if present in the font.
+    math_table: Option<Vec<u8>>,
     /// Point per em (i.e. the font size).
     ppem: f64,
 }
 
 impl Shaper {
     pub(crate) fn new(font: &Font) -> Self {
+        let math_table = font
+            .table_for_tag(Tag::new(b"MATH"))
+            .map(|table| table.buffer().to_vec());
         Self {
             // Set points-per-em. If zero, performs no hinting in that direction.
             ppem: font.descriptor.pt_size.to_f64_px(),
             skrifa_font: font.skrifa_font().clone(),
+            math_table,
         }
     }
 }
@@ -170,33 +177,55 @@ impl Shaper {
         )
     }
 
-    pub(crate) fn math_constants(&self, _is_display: bool) -> Option<crate::MathConstants> {
-        None
+    pub(crate) fn math_constants(&self, is_display: bool) -> Option<crate::MathConstants> {
+        super::math_table::math_constants(
+            &self.skrifa_font,
+            self.math_table.as_deref(),
+            self.ppem,
+            is_display,
+        )
     }
 
     pub(crate) fn math_font_scales(&self) -> Option<crate::MathFontScales> {
-        None
+        super::math_table::math_font_scales(self.math_table.as_deref())
     }
 
-    pub(crate) fn math_glyph_extents(&self, _ch: char) -> Option<crate::MathGlyphExtents> {
-        None
+    pub(crate) fn math_glyph_extents(&self, ch: char) -> Option<crate::MathGlyphExtents> {
+        super::math_table::math_glyph_extents(&self.skrifa_font, self.ppem, ch)
     }
 
-    pub(crate) fn math_char_italics_correction(&self, _ch: char) -> Au {
-        Au::zero()
+    pub(crate) fn math_char_italics_correction(&self, ch: char) -> Au {
+        super::math_table::math_char_italics_correction(
+            &self.skrifa_font,
+            self.math_table.as_deref(),
+            self.ppem,
+            ch,
+        )
     }
 
-    pub(crate) fn math_char_top_accent_attachment(&self, _ch: char) -> Option<Au> {
-        None
+    pub(crate) fn math_char_top_accent_attachment(&self, ch: char) -> Option<Au> {
+        super::math_table::math_char_top_accent_attachment(
+            &self.skrifa_font,
+            self.math_table.as_deref(),
+            self.ppem,
+            ch,
+        )
     }
 
     pub(crate) fn math_stretch_glyph(
         &self,
-        _ch: char,
-        _direction: crate::MathStretchDirection,
-        _target_size: Au,
+        ch: char,
+        direction: crate::MathStretchDirection,
+        target_size: Au,
     ) -> Option<crate::StretchedMathGlyph> {
-        None
+        super::math_table::math_stretch_glyph(
+            &self.skrifa_font,
+            self.math_table.as_deref(),
+            self.ppem,
+            ch,
+            direction,
+            target_size,
+        )
     }
 
     fn float_to_fixed(f: f64) -> i32 {

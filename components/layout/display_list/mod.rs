@@ -906,7 +906,11 @@ impl PaintTraversalHandler for DisplayListBuilder<'_> {
                         point: point.to_webrender(),
                     });
                 }
-                let bounds = run.bounds.translate(state.origin.to_vector()).to_webrender();
+                let bounds = run
+                    .bounds
+                    .translate(state.origin.to_vector())
+                    .to_webrender()
+                    .inflate(16.0, 16.0);
                 let common = builder.common_properties(state, bounds, style);
                 builder.webrender_display_list_builder.push_text(
                     &common,

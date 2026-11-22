@@ -118,19 +118,19 @@ impl ScriptParameters {
     ) -> (Au, Au) {
         let mut sub_shift = sub.map_or(Au::zero(), |s| {
             self.subscript_shift_down
-                .max(s.ascent() - self.subscript_top_max)
+                .max(s.ink_ascent - self.subscript_top_max)
                 .max(base_descent + self.subscript_baseline_drop_min)
         });
 
         let mut sup_shift = sup.map_or(Au::zero(), |s| {
             self.superscript_shift_up
-                .max(self.superscript_bottom_min + s.descent())
+                .max(self.superscript_bottom_min + s.ink_descent)
                 .max(base_ascent - self.superscript_baseline_drop_max)
         });
 
         if let (Some(sub_m), Some(sup_m)) = (sub, sup) {
-            let sub_top = sub_m.ascent() - sub_shift;
-            let sup_bottom = sup_shift - sup_m.descent();
+            let sub_top = sub_m.ink_ascent - sub_shift;
+            let sup_bottom = sup_shift - sup_m.ink_descent;
             let gap = sup_bottom - sub_top;
             if gap < self.sub_superscript_gap_min {
                 let target_sup_bottom =
@@ -138,7 +138,7 @@ impl ScriptParameters {
                 if target_sup_bottom > sup_bottom {
                     sup_shift += target_sup_bottom - sup_bottom;
                 }
-                let new_gap = (sup_shift - sup_m.descent()) - (sub_m.ascent() - sub_shift);
+                let new_gap = (sup_shift - sup_m.ink_descent) - (sub_m.ink_ascent - sub_shift);
                 if new_gap < self.sub_superscript_gap_min {
                     sub_shift += self.sub_superscript_gap_min - new_gap;
                 }
@@ -518,8 +518,8 @@ impl MathScriptsBlock {
 
         for (sub_out, sup_out) in pre_outputs.iter().chain(post_outputs.iter()) {
             let (sub_shift, sup_shift) = params.compute_shifts(
-                base_ascent,
-                base_descent,
+                base_out.metrics.ink_ascent,
+                base_out.metrics.ink_descent,
                 sub_out.as_ref().map(|o| &o.metrics),
                 sup_out.as_ref().map(|o| &o.metrics),
             );

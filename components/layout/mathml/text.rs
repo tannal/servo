@@ -157,16 +157,29 @@ impl MathTextBlock {
         // refine ink extents and populate italic correction / top accent attachment
         // from the OpenType MATH table and HarfBuzz glyph extents.
         if let Some(ch) = self.single_char {
+            let shaped_ch = if self
+                .base
+                .style
+                .get_inherited_text()
+                .text_transform
+                .case()
+                == style::values::specified::text::TextTransformCase::MathAuto
+            {
+                crate::flow::inline::text_transform::math_italic_transform(ch).unwrap_or(ch)
+            } else {
+                ch
+            };
             let font_group = layout_context
                 .font_context
                 .font_group(self.base.style.clone_font());
             if let Some(font) = font_group.first(&layout_context.font_context) {
-                if let Some(ext) = font.math_glyph_extents(ch) {
+                if let Some(ext) = font.math_glyph_extents(shaped_ch) {
                     content_metrics.ink_ascent = ext.ascent;
                     content_metrics.ink_descent = ext.descent;
                 }
-                content_metrics.italic_correction = font.math_char_italics_correction(ch);
-                content_metrics.top_accent_attachment = font.math_char_top_accent_attachment(ch);
+                content_metrics.italic_correction = font.math_char_italics_correction(shaped_ch);
+                content_metrics.top_accent_attachment =
+                    font.math_char_top_accent_attachment(shaped_ch);
             }
         }
 

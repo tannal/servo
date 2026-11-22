@@ -543,6 +543,68 @@ impl MathLevelBox {
         contents: NonReplacedContents,
         propagated_data: PropagatedBoxTreeData,
     ) -> Self {
+        let element = node_and_style_info.node.as_element();
+        let local_name = element.as_ref().map(|el| el.local_name());
+        if local_name == Some(&local_name!("mo")) {
+            let mut block_builder =
+                BlockContainerBuilder::new(context, node_and_style_info, propagated_data);
+            contents.traverse(context, node_and_style_info, &mut block_builder);
+            return match block_builder.finish() {
+                BlockContainer::InlineFormattingContext(ifc) => MathLevelBox::Operator(
+                    ArcRefCell::new(MathOperatorBlock::construct(
+                        context,
+                        node_and_style_info,
+                        ifc,
+                    )),
+                ),
+                block_container => {
+                    let bfc =
+                        BlockFormattingContext::from_block_container(block_container, false, None);
+                    let fc_contents = IndependentFormattingContextContents::Flow(bfc);
+                    let independent_fc = IndependentFormattingContext::new(
+                        LayoutBoxBase::new(
+                            node_and_style_info.into(),
+                            node_and_style_info.style.clone(),
+                        ),
+                        fc_contents,
+                        propagated_data,
+                    );
+                    MathLevelBox::Text(ArcRefCell::new(MathTextBlock::construct(
+                        node_and_style_info,
+                        independent_fc,
+                        false,
+                        false,
+                        false,
+                    )))
+                },
+            };
+        }
+        if matches!(
+            local_name,
+            Some(&local_name!("mi"))
+                | Some(&local_name!("mn"))
+                | Some(&local_name!("ms"))
+                | Some(&local_name!("mtext"))
+        ) {
+            let independent_fc = IndependentFormattingContext::construct(
+                context,
+                node_and_style_info,
+                DisplayInside::Flow {
+                    is_list_item: false,
+                },
+                Contents::NonReplaced(contents),
+                propagated_data,
+            );
+            let is_space_like = local_name == Some(&local_name!("mtext"));
+            return MathLevelBox::Text(ArcRefCell::new(MathTextBlock::construct(
+                node_and_style_info,
+                independent_fc,
+                is_space_like,
+                true,
+                false,
+            )));
+        }
+
         let mut builder = MathTraversalBuilder::new(context, propagated_data);
         contents.traverse(context, node_and_style_info, &mut builder);
         let children = builder.into_children();

@@ -40,6 +40,13 @@ pub fn add_observer(observer: Box<dyn PreferencesObserver>) {
 /// Update the values of the global preferences for the current process. This also notifies the
 /// observers previously added using [`add_observer`].
 pub fn set(preferences: Preferences) {
+    // Always sync Stylo's math-properties pref (whose upstream static default is false)
+    // before the early return, so UA stylesheet parsing sees the configured default.
+    stylo_static_prefs::set_pref!(
+        "layout.css.math-properties.enabled",
+        preferences.mathml_core_enabled
+    );
+
     // Get list of changes, returning early if the preferences haven't changed.
     let changed = preferences.diff(&PREFERENCES.read().unwrap());
     if changed.is_empty() {
@@ -47,10 +54,6 @@ pub fn set(preferences: Preferences) {
     }
 
     // Map between Stylo preference names and Servo preference names.
-    stylo_static_prefs::set_pref!(
-        "layout.css.math-properties.enabled",
-        preferences.mathml_core_enabled
-    );
     stylo_static_prefs::set_pref!("layout.threads", preferences.layout_threads as i32);
     stylo_static_prefs::set_pref!(
         "layout.css.backdrop-filter.enabled",
@@ -600,7 +603,7 @@ impl Preferences {
             layout_threads: 3,
             layout_parallelism_job_count_minimum: 4,
             layout_parallelism_job_size_minimum: 16,
-            mathml_core_enabled: false,
+            mathml_core_enabled: true,
             media_glvideo_enabled: false,
             media_testing_enabled: false,
             network_connection_timeout: 15,
