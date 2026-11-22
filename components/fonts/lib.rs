@@ -17,7 +17,9 @@ mod system_font_service;
 // These items are not meant to be part of the public API but are used for integration tests
 pub use font::{
     Font, FontBaseline, FontFamilyDescriptor, FontGroup, FontMetrics, FontRef, FontSearchScope,
-    LAST_RESORT_GLYPH_ADVANCE, PlatformFontMethods, ShapingFlags, ShapingOptions,
+    LAST_RESORT_GLYPH_ADVANCE, MathConstants, MathFontScales, MathGlyphExtents,
+    MathStretchDirection, PlatformFontMethods, PositionedMathGlyph, ShapingFlags, ShapingOptions,
+    StretchedMathGlyph,
 };
 pub use font_context::{
     CspViolationHandler, FontContext, FontContextWebFontMethods, NetworkTimingHandler,

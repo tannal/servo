@@ -147,8 +147,8 @@ impl StackingContextParentInfo {
         // > Note that text decorations are not propagated to floating and absolutely
         // > positioned descendants, nor to the contents of atomic inline-level descendants
         // > such as inline blocks and inline tables.
-        let inherited_text_decorations = if fragment.is_atomic_inline_level() ||
-            fragment
+        let inherited_text_decorations = if fragment.is_atomic_inline_level()
+            || fragment
                 .base
                 .flags
                 .contains(FragmentFlags::IS_OUTSIDE_LIST_ITEM_MARKER)
@@ -405,8 +405,8 @@ impl StackingContextTree {
             .cumulative_content_box_rect(
                 CumulativeContentRectCalculation::AlreadyDoneWithStackingContextTree,
             )
-            .origin -
-            reference_frame_origin.cast_unit();
+            .origin
+            - reference_frame_origin.cast_unit();
 
         // Use that to find the offset from the fragment origin.
         Some(transformed_point - fragment_origin)
@@ -1255,10 +1255,10 @@ impl BoxFragment {
             return None;
         }
 
-        if offsets.top.is_auto() &&
-            offsets.right.is_auto() &&
-            offsets.bottom.is_auto() &&
-            offsets.left.is_auto()
+        if offsets.top.is_auto()
+            && offsets.right.is_auto()
+            && offsets.bottom.is_auto()
+            && offsets.left.is_auto()
         {
             return None;
         }

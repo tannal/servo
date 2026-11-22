@@ -149,6 +149,38 @@ impl LayoutBoxBase {
             .store(true, Ordering::Relaxed);
     }
 
+    pub(crate) fn is_cached_layout_result_dirty(&self) -> bool {
+        self.cached_layout_result_dirty.load(Ordering::Relaxed)
+    }
+
+    pub(crate) fn clear_cached_layout_result_dirty(&self) {
+        self.cached_layout_result_dirty
+            .store(false, Ordering::Relaxed);
+    }
+
+    /// Fetch cached inline content sizes for this box or compute and cache them.
+    pub(crate) fn cached_inline_content_sizes_with(
+        &self,
+        constraint_space: &ConstraintSpace,
+        compute: impl FnOnce() -> InlineContentSizesResult,
+    ) -> InlineContentSizesResult {
+        {
+            let cache = self.cached_inline_content_size.borrow();
+            if let Some(cached) = cache.as_ref() {
+                let (previous_cb_block_size, result) = **cached;
+                if !result.depends_on_block_constraints
+                    || previous_cb_block_size == constraint_space.block_size
+                {
+                    return result;
+                }
+            }
+        }
+        let result = compute();
+        *self.cached_inline_content_size.borrow_mut() =
+            Some(Box::new((constraint_space.block_size, result)));
+        result
+    }
+
     pub(crate) fn repair_style(&mut self, new_style: &ServoArc<ComputedValues>) {
         self.style = new_style.clone();
         for fragment in self.fragments.borrow().iter() {

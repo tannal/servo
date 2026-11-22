@@ -119,6 +119,9 @@ static USER_AGENT_CSS: &[u8] = include_bytes!("./stylesheets/user-agent.css");
 /// A CSS file to style the user agent stylesheet in HTML documents.
 static HTML_MODE_CSS: &[u8] = include_bytes!("./stylesheets/html-mode.css");
 
+/// A CSS file to style the user agent stylesheet in MathML documents.
+static MATHML_CSS: &[u8] = include_bytes!("./stylesheets/mathml.css");
+
 /// A CSS file to style the Servo browser.
 static SERVO_CSS: &[u8] = include_bytes!("./stylesheets/servo.css");
 
@@ -1874,6 +1877,7 @@ fn get_ua_stylesheets(shared_lock: &SharedRwLock) -> Rc<UserAgentStylesheets> {
                         "presentational-hints.css",
                         PRESENTATIONAL_HINTS_CSS,
                     ),
+                    parse_ua_stylesheet(shared_lock, "mathml.css", MATHML_CSS),
                 ];
 
                 let html_mode_stylesheet =
@@ -1966,19 +1970,21 @@ impl FontMetricsProvider for LayoutFontMetricsProvider {
         _vertical: bool,
         font: &Font,
         base_size: CSSPixelLength,
-        _flags: QueryFontMetricsFlags,
+        flags: QueryFontMetricsFlags,
     ) -> FontMetrics {
         let font_context = &self.0;
         let font_group = self
             .0
             .font_group_with_size(ServoArc::new(font.clone()), base_size.into());
 
-        let Some(first_font_metrics) = font_group
-            .first(font_context)
-            .map(|font| font.metrics().clone())
-        else {
+        let Some(first_font) = font_group.first(font_context) else {
             return Default::default();
         };
+        let first_font_metrics = first_font.metrics();
+        let math_scales = flags
+            .contains(QueryFontMetricsFlags::NEEDS_MATH_SCALES)
+            .then(|| first_font.math_font_scales())
+            .flatten();
 
         // Only use the x-height of this font if it is non-zero. Some fonts return
         // inaccurate metrics, which shouldn't be used.
@@ -2012,8 +2018,10 @@ impl FontMetricsProvider for LayoutFontMetricsProvider {
             cap_height: None,
             ic_width,
             ascent: first_font_metrics.ascent.into(),
-            script_percent_scale_down: None,
-            script_script_percent_scale_down: None,
+            script_percent_scale_down: math_scales
+                .and_then(|scales| scales.script_percent_scale_down),
+            script_script_percent_scale_down: math_scales
+                .and_then(|scales| scales.script_script_percent_scale_down),
         }
     }
 

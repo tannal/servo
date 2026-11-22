@@ -35,6 +35,7 @@ mod sizing;
 mod style_ext;
 pub mod table;
 mod traversal;
+pub(crate) mod mathml;
 
 pub use cell::ArcRefCell;
 pub(crate) use flow::BoxTree;

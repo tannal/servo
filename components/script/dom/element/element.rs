@@ -1693,12 +1693,20 @@ impl<'dom> LayoutDom<'dom, Element> {
         // Don't panic since `display` can cause this to be called on arbitrary elements.
         self.downcast::<HTMLTableCellElement>()
             .and_then(|element| element.get_colspan())
+            .or_else(|| {
+                self.downcast::<crate::dom::mathml::mathmlelement::MathMLElement>()
+                    .and_then(|element| element.get_colspan())
+            })
     }
 
     pub(crate) fn get_rowspan(self) -> Option<u32> {
         // Don't panic since `display` can cause this to be called on arbitrary elements.
         self.downcast::<HTMLTableCellElement>()
             .and_then(|element| element.get_rowspan())
+            .or_else(|| {
+                self.downcast::<crate::dom::mathml::mathmlelement::MathMLElement>()
+                    .and_then(|element| element.get_rowspan())
+            })
     }
 
     pub(crate) fn get_rows(self) -> Option<u32> {

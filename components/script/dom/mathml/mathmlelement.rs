@@ -9,13 +9,15 @@ use js::rust::HandleObject;
 use script_bindings::codegen::GenericBindings::ElementBinding::ScrollLogicalPosition;
 use script_bindings::codegen::GenericBindings::WindowBinding::ScrollBehavior;
 use script_bindings::str::DOMString;
+use style::attr::AttrValue;
 use style::parser::ParserContext;
 use style::properties::{PropertyDeclaration, longhands};
 use style::stylesheets::{CssRuleType, Origin, UrlExtraData};
-use style::values::specified::FontSize;
+use style::values::specified::{FontSize, LengthPercentage};
 use style_traits::ParsingMode;
 use stylo_dom::ElementState;
 
+use crate::dom::NodeDamage;
 use crate::dom::bindings::codegen::Bindings::HTMLOrSVGOrMathMLElementBinding::FocusOptions;
 use crate::dom::bindings::codegen::Bindings::MathMLElementBinding::MathMLElementMethods;
 use crate::dom::bindings::inheritance::Castable;
@@ -80,6 +82,66 @@ impl VirtualMethods for MathMLElement {
         Some(self.as_element() as &dyn VirtualMethods)
     }
 
+    fn parse_plain_attribute(&self, name: &LocalName, value: DOMString) -> AttrValue {
+        match *name {
+            local_name!("width")
+            | local_name!("height")
+            | local_name!("depth")
+            | local_name!("linethickness")
+            | local_name!("lspace")
+            | local_name!("rspace") => {
+                let value_str = &value.str();
+                let parser = &mut cssparser::Parser::new(value_str);
+                let doc = self.owner_document();
+                let url = doc.url().into_url().into();
+                let context = ParserContext::new(
+                    Origin::Author,
+                    &url,
+                    None,
+                    ParsingMode::DEFAULT,
+                    doc.quirks_mode(),
+                    Default::default(),
+                    None,
+                    None,
+                    Default::default(),
+                );
+                let val = LengthPercentage::parse_quirky(
+                    &context,
+                    parser,
+                    style::values::specified::AllowQuirks::No,
+                );
+                AttrValue::LengthPercentage(value_str.to_string(), val.ok())
+            },
+            ref other if &**other == "voffset" => {
+                let value_str = &value.str();
+                let parser = &mut cssparser::Parser::new(value_str);
+                let doc = self.owner_document();
+                let url = doc.url().into_url().into();
+                let context = ParserContext::new(
+                    Origin::Author,
+                    &url,
+                    None,
+                    ParsingMode::DEFAULT,
+                    doc.quirks_mode(),
+                    Default::default(),
+                    None,
+                    None,
+                    Default::default(),
+                );
+                let val = LengthPercentage::parse_quirky(
+                    &context,
+                    parser,
+                    style::values::specified::AllowQuirks::No,
+                );
+                AttrValue::LengthPercentage(value_str.to_string(), val.ok())
+            },
+            _ => self
+                .super_type()
+                .unwrap()
+                .parse_plain_attribute(name, value),
+        }
+    }
+
     fn attribute_mutated(
         &self,
         cx: &mut JSContext,
@@ -91,8 +153,8 @@ impl VirtualMethods for MathMLElement {
             .attribute_mutated(cx, attr, mutation);
 
         let element = self.as_element();
-        if let (&local_name!("nonce"), mutation) = (attr.local_name(), mutation) {
-            match mutation {
+        match *attr.local_name() {
+            local_name!("nonce") => match mutation {
                 AttributeMutation::Set(..) => {
                     let nonce = &**attr.value();
                     element.update_nonce_internal_slot(nonce.to_owned(), cx.no_gc());
@@ -100,17 +162,46 @@ impl VirtualMethods for MathMLElement {
                 AttributeMutation::Removed => {
                     element.update_nonce_internal_slot(String::new(), cx.no_gc());
                 },
-            }
+            },
+            local_name!("linethickness")
+            | local_name!("width")
+            | local_name!("height")
+            | local_name!("depth")
+            | local_name!("lspace")
+            | local_name!("rspace")
+            | local_name!("stretchy")
+            | local_name!("symmetric")
+            | local_name!("largeop")
+            | local_name!("movablelimits")
+            | local_name!("accent")
+            | local_name!("accentunder")
+            | local_name!("columnspan")
+            | local_name!("rowspan") => {
+                self.upcast::<Node>().dirty(cx.no_gc(), NodeDamage::Other);
+            },
+            ref other if &**other == "voffset" => {
+                self.upcast::<Node>().dirty(cx.no_gc(), NodeDamage::Other);
+            },
+            _ => {},
         }
     }
 
     fn attribute_affects_presentational_hints(&self, attr: AttrRef<'_>) -> bool {
-        // TODO(tannal) Add `displaystyle` and `scriptlevel`.
         match attr.local_name() {
-            &local_name!("mathcolor") |
-            &local_name!("mathbackground") |
-            &local_name!("mathsize") |
-            &local_name!("dir") => true,
+            &local_name!("width")
+            | &local_name!("height")
+            | &local_name!("depth")
+            | &local_name!("linethickness")
+            | &local_name!("display")
+            | &local_name!("displaystyle")
+            | &local_name!("scriptlevel")
+            | &local_name!("mathvariant")
+            | &local_name!("lspace")
+            | &local_name!("rspace")
+            | &local_name!("mathcolor")
+            | &local_name!("mathbackground")
+            | &local_name!("mathsize")
+            | &local_name!("dir") => true,
             _ => self
                 .super_type()
                 .unwrap()
@@ -120,6 +211,32 @@ impl VirtualMethods for MathMLElement {
 }
 
 impl<'dom> LayoutDom<'dom, MathMLElement> {
+    /// Returns `<mtd columnspan>` clamped to `[1, 1000]` per MathML Core §3.5.
+    pub(crate) fn get_colspan(self) -> Option<u32> {
+        let element = self.upcast::<Element>();
+        if *element.local_name() != local_name!("mtd") {
+            return None;
+        }
+        let val = element.get_attr_val_for_layout(&ns!(), &LocalName::from("columnspan"))?;
+        let parsed = val.trim().parse::<u32>().ok()?;
+        if parsed == 0 {
+            Some(1)
+        } else {
+            Some(parsed.min(1000))
+        }
+    }
+
+    /// Returns `<mtd rowspan>` clamped to `[0, 65534]` per MathML Core §3.5.
+    pub(crate) fn get_rowspan(self) -> Option<u32> {
+        let element = self.upcast::<Element>();
+        if *element.local_name() != local_name!("mtd") {
+            return None;
+        }
+        let val = element.get_attr_val_for_layout(&ns!(), &local_name!("rowspan"))?;
+        let parsed = val.trim().parse::<u32>().ok()?;
+        Some(parsed.min(65534))
+    }
+
     /// Synthesizes presentational hints for MathML attributes that map directly to CSS properties.
     /// <https://w3c.github.io/mathml-core/#css-styling>
     /// <https://w3c.github.io/mathml-core/#global-attributes>
@@ -144,13 +261,63 @@ impl<'dom> LayoutDom<'dom, MathMLElement> {
             Default::default(),
         );
 
-        // Standard MathML Core presentational hints
-        // TODO(tannal) Add `displaystyle` and `scriptlevel`.
+        let element = self.upcast::<Element>();
+
+        // https://w3c.github.io/mathml-core/#dfn-displaystyle
+        if let Some(value) = element.get_attr_val_for_layout(&ns!(), &local_name!("displaystyle")) {
+            let css_val = if value.eq_ignore_ascii_case("true") {
+                Some("normal")
+            } else if value.eq_ignore_ascii_case("false") {
+                Some("compact")
+            } else {
+                None
+            };
+            if let Some(css_val) = css_val {
+                let mut parser = cssparser::Parser::new(css_val);
+                if let Ok(prop) = parser.parse_entirely(|input| {
+                    longhands::math_style::parse_declared(&parser_context, input)
+                }) {
+                    push(prop);
+                }
+            }
+        }
+
+        // https://w3c.github.io/mathml-core/#dfn-scriptlevel
+        if let Some(value) = element.get_attr_val_for_layout(&ns!(), &local_name!("scriptlevel")) {
+            let trimmed = value.trim();
+            let css_depth = if let Some(rest) = trimmed.strip_prefix('+') {
+                rest.parse::<i32>().ok().map(|n| format!("add({n})"))
+            } else if let Some(rest) = trimmed.strip_prefix('-') {
+                rest.parse::<i32>().ok().map(|n| format!("add(-{n})"))
+            } else {
+                trimmed.parse::<i32>().ok().map(|n| format!("{n}"))
+            };
+            if let Some(css_depth) = css_depth {
+                let mut parser = cssparser::Parser::new(&css_depth);
+                if let Ok(prop) = parser.parse_entirely(|input| {
+                    longhands::math_depth::parse_declared(&parser_context, input)
+                }) {
+                    push(prop);
+                }
+            }
+        }
+
+        // https://w3c.github.io/mathml-core/#dfn-mathvariant
+        if *element.local_name() == local_name!("mi")
+            && let Some(value) =
+                element.get_attr_val_for_layout(&ns!(), &LocalName::from("mathvariant"))
+            && value.eq_ignore_ascii_case("normal")
+        {
+            let mut parser = cssparser::Parser::new("none");
+            if let Ok(prop) = parser.parse_entirely(|input| {
+                longhands::text_transform::parse_declared(&parser_context, input)
+            }) {
+                push(prop);
+            }
+        }
+
         // https://w3c.github.io/mathml-core/#dfn-mathcolor
         // https://w3c.github.io/mathml-core/#dfn-mathbackground
-        // > In that case, the user agent is expected to treat
-        // > these attributes as a presentational hint setting the element's
-        // > color and background-color properties to the corresponding values.
         self.parse_mathml_attribute(
             &parser_context,
             "mathcolor",
@@ -165,10 +332,6 @@ impl<'dom> LayoutDom<'dom, MathMLElement> {
         );
 
         // https://w3c.github.io/mathml-core/#dfn-mathsize
-        // > In that case, the user agent is expected to treat
-        // > the attribute as a presentational hint setting the element's
-        // > font-size property to the corresponding value.
-        // We should only accept <length-percentage> value.
         self.parse_mathml_attribute_matching(
             &parser_context,
             "mathsize",
@@ -182,11 +345,8 @@ impl<'dom> LayoutDom<'dom, MathMLElement> {
             longhands::font_size::parse_declared,
             push,
         );
+
         // https://w3c.github.io/mathml-core/#dfn-dir
-        // > if present, must be an ASCII case-insensitive match to ltr or rtl.
-        // > In that case, the user agent is expected to treat
-        // > the attribute as a presentational hint setting the element's
-        // > direction property to the corresponding value.
         self.parse_mathml_attribute(
             &parser_context,
             "dir",
@@ -228,8 +388,8 @@ impl<'dom> LayoutDom<'dom, MathMLElement> {
         if let Some(value) = element.get_attr_val_for_layout(&ns!(), &LocalName::from(attr_name)) {
             let mut parser = cssparser::Parser::new(value);
             if let Ok(property) =
-                parser.parse_entirely(|parse_input| parse(parser_context, parse_input)) &&
-                predicate(&property)
+                parser.parse_entirely(|parse_input| parse(parser_context, parse_input))
+                && predicate(&property)
             {
                 push(property);
             }

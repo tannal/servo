@@ -102,6 +102,35 @@ impl Shaper {
 
         ShapedText::with_shaped_glyph_data(text, options, &glyph_data.rust)
     }
+
+    pub(crate) fn math_constants(&self, is_display: bool) -> Option<crate::MathConstants> {
+        self.buzz.math_constants(is_display)
+    }
+
+    pub(crate) fn math_font_scales(&self) -> Option<crate::MathFontScales> {
+        self.buzz.math_font_scales()
+    }
+
+    pub(crate) fn math_glyph_extents(&self, ch: char) -> Option<crate::MathGlyphExtents> {
+        self.buzz.math_glyph_extents(ch)
+    }
+
+    pub(crate) fn math_char_italics_correction(&self, ch: char) -> app_units::Au {
+        self.buzz.math_char_italics_correction(ch)
+    }
+
+    pub(crate) fn math_char_top_accent_attachment(&self, ch: char) -> Option<app_units::Au> {
+        self.buzz.math_char_top_accent_attachment(ch)
+    }
+
+    pub(crate) fn math_stretch_glyph(
+        &self,
+        ch: char,
+        direction: crate::MathStretchDirection,
+        target_size: app_units::Au,
+    ) -> Option<crate::StretchedMathGlyph> {
+        self.buzz.math_stretch_glyph(ch, direction, target_size)
+    }
 }
 
 fn shape_data_eq(a: &impl GlyphShapingResult, b: &impl GlyphShapingResult) -> bool {

@@ -188,10 +188,10 @@ impl Fragment {
             Fragment::Positioning(positioning_fragment) => {
                 positioning_fragment.set_cumulative_content_rect(content_rect)
             },
-            Fragment::AbsoluteOrFixedPositionedPlaceholder(..) |
-            Fragment::Text(..) |
-            Fragment::Image(..) |
-            Fragment::IFrame(..) => {},
+            Fragment::AbsoluteOrFixedPositionedPlaceholder(..)
+            | Fragment::Text(..)
+            | Fragment::Image(..)
+            | Fragment::IFrame(..) => {},
         }
     }
 
@@ -256,9 +256,9 @@ impl Fragment {
             },
             Fragment::Positioning(fragment) => fragment.scrollable_overflow_for_parent(),
             Fragment::Text(fragment) => fragment.scrollable_overflow_for_parent(),
-            Fragment::AbsoluteOrFixedPositionedPlaceholder(_) |
-            Fragment::Image(..) |
-            Fragment::IFrame(..) => self.base().map(|base| base.rect()).unwrap_or_default(),
+            Fragment::AbsoluteOrFixedPositionedPlaceholder(_)
+            | Fragment::Image(..)
+            | Fragment::IFrame(..) => self.base().map(|base| base.rect()).unwrap_or_default(),
         }
     }
 
@@ -328,10 +328,10 @@ impl Fragment {
                 &fragment.base.rect(),
                 cumulative_content_rect_calculation,
             )),
-            Fragment::Text(_) |
-            Fragment::AbsoluteOrFixedPositionedPlaceholder(_) |
-            Fragment::Image(_) |
-            Fragment::IFrame(_) => None,
+            Fragment::Text(_)
+            | Fragment::AbsoluteOrFixedPositionedPlaceholder(_)
+            | Fragment::Image(_)
+            | Fragment::IFrame(_) => None,
         }
     }
 

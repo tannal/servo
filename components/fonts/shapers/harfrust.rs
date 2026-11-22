@@ -170,6 +170,35 @@ impl Shaper {
         )
     }
 
+    pub(crate) fn math_constants(&self, _is_display: bool) -> Option<crate::MathConstants> {
+        None
+    }
+
+    pub(crate) fn math_font_scales(&self) -> Option<crate::MathFontScales> {
+        None
+    }
+
+    pub(crate) fn math_glyph_extents(&self, _ch: char) -> Option<crate::MathGlyphExtents> {
+        None
+    }
+
+    pub(crate) fn math_char_italics_correction(&self, _ch: char) -> Au {
+        Au::zero()
+    }
+
+    pub(crate) fn math_char_top_accent_attachment(&self, _ch: char) -> Option<Au> {
+        None
+    }
+
+    pub(crate) fn math_stretch_glyph(
+        &self,
+        _ch: char,
+        _direction: crate::MathStretchDirection,
+        _target_size: Au,
+    ) -> Option<crate::StretchedMathGlyph> {
+        None
+    }
+
     fn float_to_fixed(f: f64) -> i32 {
         float_to_fixed(16, f)
     }

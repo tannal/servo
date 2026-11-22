@@ -61,6 +61,112 @@ use crate::{
 };
 pub const LAST_RESORT_GLYPH_ADVANCE: FractionalPixel = 10.0;
 
+/// Dimensionless MATH scaling ratios. Zero or missing values use the style
+/// engine's Core fallback; unlike positional constants these are not Au values.
+#[derive(Clone, Copy, Debug)]
+pub struct MathFontScales {
+    pub script_percent_scale_down: Option<f32>,
+    pub script_script_percent_scale_down: Option<f32>,
+}
+
+/// Scaled OpenType MATH table constants for a font at its current size.
+/// See <https://w3c.github.io/mathml-core/#layout-constants-mathconstants>.
+#[derive(Clone, Copy, Debug)]
+pub struct MathConstants {
+    // General & display operators
+    pub axis_height: Au,
+    pub display_operator_min_height: Au,
+    pub delimited_sub_formula_min_height: Au,
+    pub accent_base_height: Au,
+    pub flattened_accent_base_height: Au,
+
+    // Fractions & stacks
+    pub rule_thickness: Au,
+    pub num_shift_up: Au,
+    pub num_gap_min: Au,
+    pub denom_shift_down: Au,
+    pub denom_gap_min: Au,
+    pub stack_top_shift_up: Au,
+    pub stack_bottom_shift_down: Au,
+    pub stack_gap_min: Au,
+
+    // Radicals (msqrt, mroot)
+    pub radical_vertical_gap: Au,
+    pub radical_rule_thickness: Au,
+    pub radical_extra_ascender: Au,
+    pub radical_kern_before_degree: Au,
+    pub radical_kern_after_degree: Au,
+    /// Unscaled percentage (e.g. 60 means 60% of radical height).
+    pub radical_degree_bottom_raise_percent: i32,
+
+    // Scripts (msub, msup, msubsup, mmultiscripts)
+    pub subscript_shift_down: Au,
+    pub subscript_top_max: Au,
+    pub subscript_baseline_drop_min: Au,
+    pub superscript_shift_up: Au,
+    pub superscript_shift_up_cramped: Au,
+    pub superscript_bottom_min: Au,
+    pub superscript_baseline_drop_max: Au,
+    pub sub_superscript_gap_min: Au,
+    pub superscript_bottom_max_with_subscript: Au,
+    pub space_after_script: Au,
+
+    // Under/Over limits (munder, mover, munderover)
+    pub upper_limit_gap_min: Au,
+    pub upper_limit_baseline_rise_min: Au,
+    pub lower_limit_gap_min: Au,
+    pub lower_limit_baseline_drop_min: Au,
+    pub overbar_vertical_gap: Au,
+    pub overbar_rule_thickness: Au,
+    pub overbar_extra_ascender: Au,
+    pub underbar_vertical_gap: Au,
+    pub underbar_rule_thickness: Au,
+    pub underbar_extra_descender: Au,
+    pub stretch_stack_top_shift_up: Au,
+    pub stretch_stack_bottom_shift_down: Au,
+    pub stretch_stack_gap_above_min: Au,
+    pub stretch_stack_gap_below_min: Au,
+}
+
+/// Ink bounding box and advance for a single glyph in scaled Au.
+#[derive(Clone, Copy, Debug)]
+pub struct MathGlyphExtents {
+    pub advance: Au,
+    pub ascent: Au,
+    pub descent: Au,
+    pub x_bearing: Au,
+    pub width: Au,
+}
+
+/// Axis along which an OpenType MATH glyph is stretched.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MathStretchDirection {
+    Horizontal,
+    Vertical,
+}
+
+/// A single positioned glyph inside a stretched variant or multi-part assembly.
+/// Coordinates are in CSS y-down pixels (`Au`) relative to the stretched glyph's
+/// left edge (`x = 0`) and alphabetic baseline (`y = 0`).
+#[derive(Clone, Copy, Debug, MallocSizeOf)]
+pub struct PositionedMathGlyph {
+    pub glyph_id: GlyphId,
+    pub x_offset: Au,
+    pub y_offset: Au,
+}
+
+/// A resolved stretched glyph (either a single size variant or a multi-part
+/// OpenType MATH glyph assembly) ready for WebRender painting.
+#[derive(Clone, Debug, MallocSizeOf)]
+pub struct StretchedMathGlyph {
+    pub glyphs: Vec<PositionedMathGlyph>,
+    pub inline_size: Au,
+    pub ascent: Au,
+    pub descent: Au,
+    pub italics_correction: Au,
+    pub top_accent_attachment: Option<Au>,
+}
+
 // PlatformFont encapsulates access to the platform's font API,
 // e.g. quartz, FreeType. It provides access to metrics and tables
 // needed by the text shaper as well as access to the underlying font
@@ -347,6 +453,53 @@ impl Font {
             can_do_fast_shaping: OnceLock::new(),
             family_name: Default::default(),
         })
+    }
+
+    pub fn math_constants(&self, is_display: bool) -> Option<MathConstants> {
+        self.shaper
+            .get_or_init(|| Shaper::new(self))
+            .math_constants(is_display)
+    }
+
+    /// Query the inherited font's script scales for CSS `font-size: math`.
+    pub fn math_font_scales(&self) -> Option<MathFontScales> {
+        self.shaper
+            .get_or_init(|| Shaper::new(self))
+            .math_font_scales()
+    }
+
+    /// Query tight ink extents and horizontal advance for a character's nominal glyph.
+    pub fn math_glyph_extents(&self, ch: char) -> Option<MathGlyphExtents> {
+        self.shaper
+            .get_or_init(|| Shaper::new(self))
+            .math_glyph_extents(ch)
+    }
+
+    /// Query OpenType MATH italic correction for a character's nominal glyph.
+    pub fn math_char_italics_correction(&self, ch: char) -> Au {
+        self.shaper
+            .get_or_init(|| Shaper::new(self))
+            .math_char_italics_correction(ch)
+    }
+
+    /// Query OpenType MATH top accent attachment point for a character's nominal glyph.
+    pub fn math_char_top_accent_attachment(&self, ch: char) -> Option<Au> {
+        self.shaper
+            .get_or_init(|| Shaper::new(self))
+            .math_char_top_accent_attachment(ch)
+    }
+
+    /// Select an OpenType MATH size variant or build a multi-part glyph assembly
+    /// for `ch` stretched along `direction` to cover at least `target_size`.
+    pub fn math_stretch_glyph(
+        &self,
+        ch: char,
+        direction: MathStretchDirection,
+        target_size: Au,
+    ) -> Option<StretchedMathGlyph> {
+        self.shaper
+            .get_or_init(|| Shaper::new(self))
+            .math_stretch_glyph(ch, direction, target_size)
     }
 
     /// A unique identifier for the font, allowing comparison.

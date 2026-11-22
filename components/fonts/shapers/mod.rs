@@ -45,8 +45,12 @@ pub(crate) use dynamic::DynShaper as Shaper;
 
 #[cfg(all(feature = "harfbuzz", feature = "harfrust"))]
 mod dynamic {
+    use app_units::Au;
     use super::Tag;
-    use crate::{Font, ShapedText, ShapingOptions};
+    use crate::{
+        Font, MathConstants, MathFontScales, MathGlyphExtents, MathStretchDirection, ShapedText,
+        ShapingOptions, StretchedMathGlyph,
+    };
 
     pub(crate) enum DynShaper {
         HarfRust(super::HarfRustShaper),
@@ -78,6 +82,59 @@ mod dynamic {
                 Self::HarfRust(shaper) => shaper.shape_text(font, text, options, font_features),
                 Self::HarfBuzz(shaper) => shaper.shape_text(font, text, options, font_features),
                 Self::Compare(shaper) => shaper.shape_text(font, text, options, font_features),
+            }
+        }
+
+        pub(crate) fn math_constants(&self, is_display: bool) -> Option<MathConstants> {
+            match self {
+                Self::HarfRust(shaper) => shaper.math_constants(is_display),
+                Self::HarfBuzz(shaper) => shaper.math_constants(is_display),
+                Self::Compare(shaper) => shaper.math_constants(is_display),
+            }
+        }
+
+        pub(crate) fn math_font_scales(&self) -> Option<MathFontScales> {
+            match self {
+                Self::HarfRust(shaper) => shaper.math_font_scales(),
+                Self::HarfBuzz(shaper) => shaper.math_font_scales(),
+                Self::Compare(shaper) => shaper.math_font_scales(),
+            }
+        }
+
+        pub(crate) fn math_glyph_extents(&self, ch: char) -> Option<MathGlyphExtents> {
+            match self {
+                Self::HarfRust(shaper) => shaper.math_glyph_extents(ch),
+                Self::HarfBuzz(shaper) => shaper.math_glyph_extents(ch),
+                Self::Compare(shaper) => shaper.math_glyph_extents(ch),
+            }
+        }
+
+        pub(crate) fn math_char_italics_correction(&self, ch: char) -> Au {
+            match self {
+                Self::HarfRust(shaper) => shaper.math_char_italics_correction(ch),
+                Self::HarfBuzz(shaper) => shaper.math_char_italics_correction(ch),
+                Self::Compare(shaper) => shaper.math_char_italics_correction(ch),
+            }
+        }
+
+        pub(crate) fn math_char_top_accent_attachment(&self, ch: char) -> Option<Au> {
+            match self {
+                Self::HarfRust(shaper) => shaper.math_char_top_accent_attachment(ch),
+                Self::HarfBuzz(shaper) => shaper.math_char_top_accent_attachment(ch),
+                Self::Compare(shaper) => shaper.math_char_top_accent_attachment(ch),
+            }
+        }
+
+        pub(crate) fn math_stretch_glyph(
+            &self,
+            ch: char,
+            direction: MathStretchDirection,
+            target_size: Au,
+        ) -> Option<StretchedMathGlyph> {
+            match self {
+                Self::HarfRust(shaper) => shaper.math_stretch_glyph(ch, direction, target_size),
+                Self::HarfBuzz(shaper) => shaper.math_stretch_glyph(ch, direction, target_size),
+                Self::Compare(shaper) => shaper.math_stretch_glyph(ch, direction, target_size),
             }
         }
     }

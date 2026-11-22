@@ -47,6 +47,10 @@ pub fn set(preferences: Preferences) {
     }
 
     // Map between Stylo preference names and Servo preference names.
+    stylo_static_prefs::set_pref!(
+        "layout.css.math-properties.enabled",
+        preferences.mathml_core_enabled
+    );
     stylo_static_prefs::set_pref!("layout.threads", preferences.layout_threads as i32);
     stylo_static_prefs::set_pref!(
         "layout.css.backdrop-filter.enabled",

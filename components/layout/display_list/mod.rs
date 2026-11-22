@@ -62,7 +62,8 @@ use crate::display_list::paint_traversal::{PaintTraversal, PaintTraversalHandler
 use crate::fragment_tree::{
     BackgroundMode, BaseFragment, BoxFragment, BoxFragmentWithStyle,
     CumulativeContentRectCalculation, Fragment, FragmentFlags, FragmentStatus, FragmentTree,
-    IFrameFragment, ImageFragment, PositioningFragment, SpecificLayoutInfo, Tag, TextFragment,
+    IFrameFragment, ImageFragment, MathPaintInfo, PositioningFragment, SpecificLayoutInfo, Tag,
+    TextFragment,
 };
 use crate::geom::{
     LengthPercentageOrAuto, PhysicalPoint, PhysicalRect, PhysicalSides, PhysicalSize,
@@ -450,9 +451,9 @@ impl DisplayListBuilder<'_> {
             .used_transform_style(fragment.base.flags)
             .to_webrender();
 
-        if !style.has_effective_transform_or_perspective(FragmentFlags::empty()) &&
-            (transform_style == TransformStyle::Flat &&
-                !stacking_context.participates_in_a_3d_rendering_context)
+        if !style.has_effective_transform_or_perspective(FragmentFlags::empty())
+            && (transform_style == TransformStyle::Flat
+                && !stacking_context.participates_in_a_3d_rendering_context)
         {
             return false;
         }
@@ -516,12 +517,12 @@ impl DisplayListBuilder<'_> {
 
                 // WebRender only uses the stacking context to apply certain effects. If we don't
                 // actually need to create a stacking context, just avoid creating one.
-                if !is_blend_container &&
-                    effects.filter.0.is_empty() &&
-                    effects.backdrop_filter.0.is_empty() &&
-                    effects.opacity == 1.0 &&
-                    effects.mix_blend_mode == ComputedMixBlendMode::Normal &&
-                    style.get_svg().clip_path == ComputedClipPath::None
+                if !is_blend_container
+                    && effects.filter.0.is_empty()
+                    && effects.backdrop_filter.0.is_empty()
+                    && effects.opacity == 1.0
+                    && effects.mix_blend_mode == ComputedMixBlendMode::Normal
+                    && style.get_svg().clip_path == ComputedClipPath::None
                 {
                     return false;
                 }
@@ -866,8 +867,8 @@ impl PaintTraversalHandler for DisplayListBuilder<'_> {
     fn visit_box(&mut self, state: &TraversalState, fragment: &BoxFragmentWithStyle<'_>) {
         fragment.base.visit_fragment(self);
 
-        if let Some(mut inspector_highlight) = self.inspector_highlight.take() &&
-            fragment.base.tag == Some(inspector_highlight.tag)
+        if let Some(mut inspector_highlight) = self.inspector_highlight.take()
+            && fragment.base.tag == Some(inspector_highlight.tag)
         {
             inspector_highlight.register_fragment_of_highlighted_dom_node(self, state, fragment);
             self.inspector_highlight = Some(inspector_highlight);
@@ -878,6 +879,70 @@ impl PaintTraversalHandler for DisplayListBuilder<'_> {
         };
 
         BuilderForBoxFragment::new(fragment, state.origin).build(self, state)
+    }
+
+    fn visit_box_for_math_paint(
+        &mut self,
+        state: &TraversalState,
+        fragment: &BoxFragmentWithStyle<'_>,
+    ) {
+        let style = fragment.style();
+        if style.get_inherited_box().visibility != Visibility::Visible {
+            return;
+        }
+        let color = rgba(*style.get_color());
+        let paint_glyph_run =
+            |builder: &mut DisplayListBuilder<'_>,
+             run: &crate::fragment_tree::MathGlyphRun| {
+                if run.glyphs.is_empty() {
+                    return;
+                }
+                let origin = state.origin.to_vector() + run.origin.to_vector();
+                builder.glyph_buffer.clear();
+                for g in &run.glyphs {
+                    let point = PhysicalPoint::new(origin.x + g.x_offset, origin.y + g.y_offset);
+                    builder.glyph_buffer.push(wr::GlyphInstance {
+                        index: g.glyph_id,
+                        point: point.to_webrender(),
+                    });
+                }
+                let bounds = run.bounds.translate(state.origin.to_vector()).to_webrender();
+                let common = builder.common_properties(state, bounds, style);
+                builder.webrender_display_list_builder.push_text(
+                    &common,
+                    bounds,
+                    &builder.glyph_buffer,
+                    run.font_key,
+                    color,
+                    None,
+                );
+            };
+
+        match fragment.math_paint_info() {
+            Some(MathPaintInfo::Fraction { mut bar_rect }) => {
+                bar_rect.size.height = bar_rect.size.height.max(Au::from_px(1));
+                let rect = bar_rect.translate(state.origin.to_vector()).to_webrender();
+                let common = self.common_properties(state, rect, style);
+                self.wr().push_rect(&common, rect, color);
+            },
+            Some(MathPaintInfo::Radical {
+                rule_rect,
+                radical_glyph,
+            }) => {
+                if rule_rect.size.height > Au::zero() && rule_rect.size.width > Au::zero() {
+                    let rect = rule_rect.translate(state.origin.to_vector()).to_webrender();
+                    let common = self.common_properties(state, rect, style);
+                    self.wr().push_rect(&common, rect, color);
+                }
+                if let Some(ref run) = radical_glyph {
+                    paint_glyph_run(self, run);
+                }
+            },
+            Some(MathPaintInfo::StretchedGlyph(ref run)) => {
+                paint_glyph_run(self, run);
+            },
+            None => {},
+        }
     }
 
     fn visit_iframe(&mut self, state: &TraversalState, fragment: &Arc<IFrameFragment>) {
@@ -1288,8 +1353,8 @@ impl Fragment {
                 );
 
                 // Accumulate this text fragment for LCP by the containing element's tag
-                if let Some(tag) = state.containing_element_tag &&
-                    builder.largest_contentful_paint_enabled
+                if let Some(tag) = state.containing_element_tag
+                    && builder.largest_contentful_paint_enabled
                 {
                     let transform = builder
                         .paint_info
@@ -1431,9 +1496,9 @@ impl Fragment {
             // the original rectangle.
             if matches!(
                 style,
-                ComputedTextDecorationStyle::Dotted |
-                    ComputedTextDecorationStyle::Dashed |
-                    ComputedTextDecorationStyle::Wavy,
+                ComputedTextDecorationStyle::Dotted
+                    | ComputedTextDecorationStyle::Dashed
+                    | ComputedTextDecorationStyle::Wavy,
             ) {
                 rect.min.x = rect.min.x.min(0.0);
             }
@@ -1509,8 +1574,8 @@ impl Fragment {
         // offsets. This allows updating this selection directly from the DOM (skipping layout).
         let selection_character_range = run_data.map_dom_range_to_transformed_range(selection);
 
-        if fragment.character_range_in_dom_node.start > selection_character_range.end ||
-            fragment.character_range_in_dom_node.end < selection_character_range.start
+        if fragment.character_range_in_dom_node.start > selection_character_range.end
+            || fragment.character_range_in_dom_node.end < selection_character_range.start
         {
             return;
         }
@@ -1519,8 +1584,8 @@ impl Fragment {
         // layout will push an empty fragment in order to trigger painting of the cursor on an empty line.
         // This code ensure that it is only painted if the cursor is on the starting index of the empty
         // fragment.
-        if fragment.is_empty_for_text_cursor &&
-            !fragment
+        if fragment.is_empty_for_text_cursor
+            && !fragment
                 .character_range_in_dom_node
                 .contains(&selection_character_range.start)
         {
@@ -1533,12 +1598,12 @@ impl Fragment {
         let mut end_advance = None;
         for glyph_store in fragment.glyphs.iter() {
             let glyph_store_character_count = glyph_store.character_count();
-            if current_character_index + glyph_store_character_count <
-                selection_character_range.start
+            if current_character_index + glyph_store_character_count
+                < selection_character_range.start
             {
-                current_advance += glyph_store.total_advance() +
-                    (fragment.justification_adjustment *
-                        glyph_store.total_word_separators() as i32);
+                current_advance += glyph_store.total_advance()
+                    + (fragment.justification_adjustment
+                        * glyph_store.total_word_separators() as i32);
                 current_character_index += glyph_store_character_count;
                 continue;
             }
@@ -1793,9 +1858,9 @@ impl<'a> BuilderForBoxFragment<'a> {
             .effective_overflow(self.fragment.base.flags);
         let scrolls_via_user_input =
             |overflow| matches!(overflow, ComputedOverflow::Scroll | ComputedOverflow::Auto);
-        if (scrolls_via_user_input(overflow.x) || scrolls_via_user_input(overflow.y)) &&
-            self.fragment.style().get_inherited_ui().pointer_events !=
-                style::computed_values::pointer_events::T::None
+        if (scrolls_via_user_input(overflow.x) || scrolls_via_user_input(overflow.y))
+            && self.fragment.style().get_inherited_ui().pointer_events
+                != style::computed_values::pointer_events::T::None
         {
             let mut inner_state = state.clone();
             inner_state.spatial_id = self
@@ -1907,8 +1972,8 @@ impl<'a> BuilderForBoxFragment<'a> {
             return;
         }
         // If the `<body>` background was inherited by the root element, don't paint it again here.
-        if !builder.paint_body_background &&
-            flags.intersects(FragmentFlags::IS_BODY_ELEMENT_OF_HTML_ELEMENT_ROOT)
+        if !builder.paint_body_background
+            && flags.intersects(FragmentFlags::IS_BODY_ELEMENT_OF_HTML_ELEMENT_ROOT)
         {
             return;
         }
@@ -2762,10 +2827,10 @@ impl BoxFragment {
     fn border_radius(&self) -> BorderRadius {
         let style = self.style();
         let border = style.get_border();
-        if border.border_top_left_radius.0.is_zero() &&
-            border.border_top_right_radius.0.is_zero() &&
-            border.border_bottom_right_radius.0.is_zero() &&
-            border.border_bottom_left_radius.0.is_zero()
+        if border.border_top_left_radius.0.is_zero()
+            && border.border_top_right_radius.0.is_zero()
+            && border.border_bottom_right_radius.0.is_zero()
+            && border.border_bottom_left_radius.0.is_zero()
         {
             return BorderRadius::zero();
         }

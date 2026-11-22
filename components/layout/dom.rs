@@ -36,6 +36,7 @@ use crate::formatting_contexts::IndependentFormattingContext;
 use crate::fragment_tree::{Fragment, FragmentFlags};
 use crate::geom::PhysicalSize;
 use crate::layout_box_base::LayoutBoxBase;
+use crate::mathml::MathLevelBox;
 use crate::replaced::{CanvasInfo, IFrameInfo, ImageInfo, VideoInfo};
 use crate::style_ext::{
     ComputedValuesExt, Display, DisplayGeneratingBox, DisplayLayoutInternal, DisplayOutside,
@@ -142,6 +143,7 @@ impl InnerDOMLayoutData {
 pub(super) enum LayoutBox {
     DisplayContents(SharedInlineStyles),
     BlockLevel(ArcRefCell<BlockLevelBox>),
+    MathLevel(ArcRefCell<MathLevelBox>),
     InlineLevel(InlineItem),
     FlexLevel(ArcRefCell<FlexLevelBox>),
     TableLevelBox(TableLevelBox),
@@ -166,6 +168,7 @@ impl LayoutBox {
         Some(match self {
             LayoutBox::DisplayContents(..) | LayoutBox::Text(..) => return None,
             LayoutBox::BlockLevel(block_level_box) => block_level_box.borrow().with_base(callback),
+            LayoutBox::MathLevel(math_box) => math_box.borrow().with_base(callback),
             LayoutBox::InlineLevel(inline_item) => inline_item.with_base(callback),
             LayoutBox::FlexLevel(flex_level_box) => flex_level_box.borrow().with_base(callback),
             LayoutBox::TaffyItemBox(taffy_item_box) => taffy_item_box.borrow().with_base(callback),
@@ -182,6 +185,9 @@ impl LayoutBox {
             LayoutBox::DisplayContents(..) | LayoutBox::Text(..) => return None,
             LayoutBox::BlockLevel(block_level_box) => {
                 block_level_box.borrow_mut().with_base_mut(callback)
+            },
+            LayoutBox::MathLevel(math_level_box) => {
+                math_level_box.borrow_mut().with_base_mut(callback)
             },
             LayoutBox::InlineLevel(inline_item) => inline_item.with_base_mut(callback),
             LayoutBox::FlexLevel(flex_level_box) => {
@@ -208,6 +214,11 @@ impl LayoutBox {
             },
             LayoutBox::BlockLevel(block_level_box) => {
                 block_level_box
+                    .borrow_mut()
+                    .repair_style(context, node, new_style);
+            },
+            LayoutBox::MathLevel(math_level_box) => {
+                math_level_box
                     .borrow_mut()
                     .repair_style(context, node, new_style);
             },
@@ -241,6 +252,9 @@ impl LayoutBox {
             Self::BlockLevel(block_level_box) => {
                 block_level_box.borrow().attached_to_tree(layout_box)
             },
+            Self::MathLevel(math_level_box) => {
+                math_level_box.borrow().attached_to_tree(layout_box)
+            },
             Self::InlineLevel(inline_item) => inline_item.attached_to_tree(layout_box),
             Self::FlexLevel(flex_level_box) => flex_level_box.borrow().attached_to_tree(layout_box),
             Self::TableLevelBox(table_level_box) => table_level_box.attached_to_tree(layout_box),
@@ -263,6 +277,9 @@ impl LayoutBox {
             },
             Self::BlockLevel(block_level_box) => {
                 WeakLayoutBox::BlockLevel(block_level_box.downgrade())
+            },
+            Self::MathLevel(math_level_box) => {
+                WeakLayoutBox::MathLevel(math_level_box.downgrade())
             },
             Self::InlineLevel(inline_item) => WeakLayoutBox::InlineLevel(inline_item.downgrade()),
             Self::FlexLevel(flex_level_box) => WeakLayoutBox::FlexLevel(flex_level_box.downgrade()),
@@ -318,6 +335,10 @@ impl LayoutBox {
                 TableLevelBox::Cell(cell) => callback(&cell.borrow().context),
                 TableLevelBox::TrackGroup(..) | TableLevelBox::Track(..) => None,
             },
+            LayoutBox::MathLevel(math_level_box) => match &*math_level_box.borrow() {
+                MathLevelBox::Text(text) => callback(&text.borrow().formatting_context),
+                _ => None,
+            },
             LayoutBox::TaffyItemBox(taffy_item_box) => {
                 match &taffy_item_box.borrow().taffy_level_box {
                     TaffyItemBoxInner::InFlowBox(independent_formatting_context) => {
@@ -367,6 +388,7 @@ impl LayoutBox {
 pub(super) enum WeakLayoutBox {
     DisplayContents(SharedInlineStyles),
     BlockLevel(WeakRefCell<BlockLevelBox>),
+    MathLevel(WeakRefCell<MathLevelBox>),
     InlineLevel(WeakInlineItem),
     FlexLevel(WeakRefCell<FlexLevelBox>),
     TableLevelBox(WeakTableLevelBox),
@@ -382,6 +404,9 @@ impl WeakLayoutBox {
                 LayoutBox::DisplayContents(inline_shared_styles.clone())
             },
             Self::BlockLevel(block_level_box) => LayoutBox::BlockLevel(block_level_box.upgrade()?),
+            Self::MathLevel(math_level_box) => {
+                LayoutBox::MathLevel(math_level_box.upgrade()?)
+            },
             Self::InlineLevel(inline_item) => LayoutBox::InlineLevel(inline_item.upgrade()?),
             Self::FlexLevel(flex_level_box) => LayoutBox::FlexLevel(flex_level_box.upgrade()?),
             Self::TableLevelBox(table_level_box) => {
@@ -861,6 +886,7 @@ impl<'dom> NodeExt<'dom> for ServoLayoutNode<'dom> {
                     BlockLevelBox::OutOfFlowFloatBox(..) |
                     BlockLevelBox::OutOfFlowAbsolutelyPositionedBox(..)
             ),
+            LayoutBox::MathLevel(..) => false,
             LayoutBox::InlineLevel(inline_level) => matches!(
                 inline_level,
                 InlineItem::OutOfFlowAbsolutelyPositionedBox(..) | InlineItem::Atomic(..)
@@ -974,6 +1000,7 @@ impl<'dom> NodeExt<'dom> for ServoLayoutNode<'dom> {
                     _ => false,
                 }
             },
+            LayoutBox::MathLevel(..) => false,
             LayoutBox::InlineLevel(inline_level) => match inline_level {
                 InlineItem::OutOfFlowAbsolutelyPositionedBox(positioned_box, ..) => {
                     if !info.style.get_box().position.is_absolutely_positioned() {

@@ -381,7 +381,7 @@ impl BlockLevelBox {
 }
 
 #[derive(Clone, Copy, MallocSizeOf, PartialEq)]
-pub(crate) struct CollapsibleWithParentStartMargin(bool);
+pub(crate) struct CollapsibleWithParentStartMargin(pub(crate) bool);
 
 /// The contentes of a BlockContainer created to render a list marker
 /// for a list that has `list-style-position: outside`.

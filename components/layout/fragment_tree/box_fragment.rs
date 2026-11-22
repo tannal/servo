@@ -74,12 +74,57 @@ pub(crate) struct BlockLevelLayoutInfo {
     pub block_margins_collapsed_with_children: CollapsedBlockMargins,
 }
 
+/// A positioned run of OpenType MATH glyphs (single variant or multi-part assembly)
+/// painted directly via WebRender `push_text`.
+#[derive(Clone, Debug, MallocSizeOf)]
+pub(crate) struct MathGlyphRun {
+    #[ignore_malloc_size_of = "FontInstanceKey is a small Copy identifier"]
+    pub font_key: webrender_api::FontInstanceKey,
+    pub glyphs: Vec<fonts::PositionedMathGlyph>,
+    /// Alphabetic baseline origin relative to the owning fragment's content origin.
+    pub origin: PhysicalPoint<Au>,
+    /// Paint bounding rectangle relative to the owning fragment's content origin.
+    pub bounds: PhysicalRect<Au>,
+}
+
+/// Extra drawing produced by a mathematical layout algorithm on an ordinary
+/// CSS box. This is paint input, not parent/child measurement or style state.
+/// Geometry is relative to the owning fragment's content origin; the shared
+/// traversal supplies clipping, transforms, visibility, stacking, and color.
+///
+/// A fraction rule has resolved thickness and color, not an independently styled
+/// child box. Compare [Core fractions](https://w3c.github.io/mathml-core/#fractions-mfrac)
+/// and [Blink's payload](https://github.com/chromium/chromium/blob/main/third_party/blink/renderer/core/layout/mathml/mathml_paint_info.h).
+/// Keep speculative measurement data in MathLayoutResult, not in rare paint data.
+#[derive(Clone, Debug, MallocSizeOf)]
+pub(crate) enum MathPaintInfo {
+    /// Fraction-rule rectangle in CSS app units, relative to the content origin.
+    Fraction { bar_rect: PhysicalRect<Au> },
+
+    /// Overbar rectangle and stretched radical surd glyph relative to the owning
+    /// box's content origin (`msqrt` / `mroot`).
+    Radical {
+        rule_rect: PhysicalRect<Au>,
+        radical_glyph: Option<MathGlyphRun>,
+    },
+
+    /// A stretched operator glyph variant or multi-part assembly (`mo`).
+    StretchedGlyph(MathGlyphRun),
+}
+
 #[derive(Clone, Default, MallocSizeOf)]
 pub(crate) struct BoxFragmentRareData {
     /// The resolved box insets if this box is `position: sticky`. These are calculated
     /// during `StackingContextTree` construction because they rely on the size of the
     /// scroll container.
     pub(crate) resolved_sticky_insets: Option<Box<PhysicalSides<AuOrAuto>>>,
+
+    /// Paint bars for MathML <mfrac>, <msqrt> etc.
+    /// Content-relative mathematical graphics produced by layout. These survive
+    /// stacking-context construction and use the owning box's style when painted.
+    /// The optional boxed payload keeps ordinary CSS fragments small. It is not
+    /// a cache of child metrics, core-operator properties, or stretch requests.
+    pub math_paint_info: Option<Box<MathPaintInfo>>,
 
     /// Information that is specific to a layout system (e.g., grid, table, etc.).
     pub specific_layout_info: Option<SpecificLayoutInfo>,
@@ -101,6 +146,7 @@ impl BoxFragmentRareData {
             .map(|info| {
                 OnceBox::with_value(Box::new(AtomicRefCell::new(BoxFragmentRareData {
                     resolved_sticky_insets: None,
+                    math_paint_info: None,
                     specific_layout_info: Some(info),
                     generated_clip_id: None,
                     generated_scroll_tree_node_id: None,
@@ -220,6 +266,23 @@ impl BoxFragment {
     pub(crate) fn with_baselines(mut self, baselines: Baselines) -> Self {
         self.baselines = baselines;
         self
+    }
+
+    pub(crate) fn with_math_paint_info(self, info: Option<MathPaintInfo>) -> Self {
+        if info.is_some() || self.rare_data.get().is_some() {
+            self.ensure_rare_data().math_paint_info = info.map(Box::new);
+        }
+        self
+    }
+
+    /// Clone the paint payload so painting does not hold a rare-data borrow.
+    pub(crate) fn math_paint_info(&self) -> Option<MathPaintInfo> {
+        self.rare_data
+            .get()?
+            .borrow()
+            .math_paint_info
+            .as_deref()
+            .cloned()
     }
 
     pub(crate) fn style<'a>(&'a self) -> AtomicRef<'a, ServoArc<ComputedValues>> {
@@ -447,6 +510,10 @@ impl BoxFragment {
             self.baselines,
             with_style.style().effective_overflow(self.base.flags),
         ));
+
+        if let Some(info) = self.math_paint_info() {
+            tree.add_item(format!("math_paint_info={info:?}"));
+        }
 
         for child in &self.children {
             child.print(tree);
@@ -721,8 +788,8 @@ impl<'a> BoxFragmentWithStyle<'a> {
         // TODO: For input elements, we also disable the padding in the inline direction, as we
         // do not have a way to scroll the textual input element in inline direction yet.
         let should_include_additional_padding =
-            self.style().establishes_scroll_container(self.base.flags) &&
-                !self.base.flags.intersects(FragmentFlags::IS_INPUT_ELEMENT);
+            self.style().establishes_scroll_container(self.base.flags)
+                && !self.base.flags.intersects(FragmentFlags::IS_INPUT_ELEMENT);
 
         if should_include_additional_padding {
             scrollable_overflow = self
