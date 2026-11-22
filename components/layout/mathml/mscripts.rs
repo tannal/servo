@@ -507,8 +507,8 @@ impl MathScriptsBlock {
                 .collect()
         };
 
-        let mut pre_outputs = measure_pairs(&self.prescripts);
-        let mut post_outputs = measure_pairs(&self.postscripts);
+        let pre_outputs = measure_pairs(&self.prescripts);
+        let post_outputs = measure_pairs(&self.postscripts);
 
         let base_ascent = base_out.metrics.ascent();
         let base_descent = base_out.metrics.descent();

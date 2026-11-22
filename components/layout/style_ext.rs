@@ -82,7 +82,7 @@ impl DisplayGeneratingBox {
                 inside: DisplayInside::Flow { .. } | DisplayInside::FlowRoot { .. },
             } = self
                 && layout_api::LayoutNode::as_element(&info.node)
-                    .is_some_and(|el| style::dom::TElement::is_mathml_element(&el))
+                    .is_some_and(|el| layout_api::LayoutElement::is_mathml_element(&el))
             {
                 return DisplayGeneratingBox::OutsideInside {
                     outside: *outside,

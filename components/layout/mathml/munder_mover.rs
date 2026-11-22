@@ -350,7 +350,6 @@ impl MathUnderOverBlock {
         let layout_style = LayoutStyle::Default(style);
         let box_sizes =
             layout_style.content_box_sizes_and_padding_border_margin(&containing_block.into());
-        let pbm = box_sizes.pbm;
 
         let font_group = layout_context.font_context.font_group(style.clone_font());
         let font = font_group.first(&layout_context.font_context);
@@ -380,6 +379,7 @@ impl MathUnderOverBlock {
             positioning_context.append(local_positioning);
             return result;
         }
+        let pbm = box_sizes.pbm;
 
         // Standard under/over stacked layout with inline-axis operator stretching.
         let is_inline_stretchy = |child: &ArcRefCell<MathLevelBox>| {

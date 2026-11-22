@@ -55,7 +55,7 @@ impl<'dom> NodeAndStyleInfo<'dom> {
             && self
                 .node
                 .as_element()
-                .is_some_and(|el| style::dom::TElement::is_mathml_element(&el))
+                .is_some_and(|el| el.is_mathml_element())
         {
             return None;
         }
