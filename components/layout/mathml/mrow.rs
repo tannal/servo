@@ -103,6 +103,33 @@ impl MathRowBlock {
                     _ => MathRowKind::Grouping,
                 }
             });
+        // MathML Core §3.2.4.2: infer operator form (prefix / infix / postfix) for
+        // embellished operator children inside a grouping element with >1 in-flow child.
+        if kind == MathRowKind::Grouping {
+            let in_flow_indices: Vec<usize> = children
+                .iter()
+                .enumerate()
+                .filter_map(|(i, c)| c.borrow().is_in_flow().then_some(i))
+                .collect();
+            if in_flow_indices.len() > 1 {
+                let first = in_flow_indices[0];
+                let last = *in_flow_indices.last().unwrap();
+                for &idx in &in_flow_indices {
+                    let child = children[idx].borrow();
+                    if child.operator_properties().is_some() {
+                        let form = if idx == first {
+                            super::operator_dictionary::OperatorForm::Prefix
+                        } else if idx == last {
+                            super::operator_dictionary::OperatorForm::Postfix
+                        } else {
+                            super::operator_dictionary::OperatorForm::Infix
+                        };
+                        child.set_inferred_operator_form(form);
+                    }
+                }
+            }
+        }
+
         MathRowBlock {
             base,
             children,
@@ -146,26 +173,32 @@ impl MathRowBlock {
         })
     }
 
-    /// Sum in-flow contributions for the inferred row. This is currently the
-    /// advance-only part of the row algorithm: full operator spacing and italic
-    /// correction still need integration. Keeping this undecorated lets mpadded reuse it.
+    /// Sum in-flow contributions for the inferred row, including embellished-operator
+    /// `lspace` and `rspace` when this row is not itself an embellished operator.
     pub(crate) fn content_inline_sizes(
         &self,
         layout_context: &LayoutContext,
         constraint_space: &ConstraintSpace,
     ) -> InlineContentSizesResult {
+        let apply_op_spacing = self.embellished_operator_index().is_none();
         let mut min_content = Au::zero();
         let mut max_content = Au::zero();
         let mut depends_on_block_constraints = false;
         for child in &self.children {
-            if !child.borrow().is_in_flow() {
+            let child = child.borrow();
+            if !child.is_in_flow() {
                 continue;
             }
-            let child_sizes = child
-                .borrow()
-                .inline_content_sizes(layout_context, constraint_space);
-            min_content += child_sizes.sizes.min_content;
-            max_content += child_sizes.sizes.max_content;
+            let child_sizes = child.inline_content_sizes(layout_context, constraint_space);
+            let op_spacing = if apply_op_spacing {
+                child
+                    .operator_properties()
+                    .map_or(Au::zero(), |p| p.lspace + p.rspace)
+            } else {
+                Au::zero()
+            };
+            min_content += child_sizes.sizes.min_content + op_spacing;
+            max_content += child_sizes.sizes.max_content + op_spacing;
             depends_on_block_constraints |= child_sizes.depends_on_block_constraints;
         }
         InlineContentSizesResult {
@@ -362,14 +395,20 @@ impl MathRowBlock {
             ));
         }
 
+        let apply_op_spacing = self.embellished_operator_index().is_none();
         let mut extents: Option<(Au, Au, Au, Au)> = None;
         let mut total_inline = Au::zero();
-        for (child, output) in self.children.iter().zip(&outputs) {
+        for (index, (child, output)) in self.children.iter().zip(&outputs).enumerate() {
             if !child.borrow().is_in_flow() {
                 continue;
             }
             let metrics = &output.as_ref().unwrap().metrics;
-            total_inline += metrics.size.inline;
+            let (lspace, rspace) = if apply_op_spacing {
+                properties[index].map_or((Au::zero(), Au::zero()), |p| (p.lspace, p.rspace))
+            } else {
+                (Au::zero(), Au::zero())
+            };
+            total_inline += lspace + metrics.size.inline + rspace;
             let child = (
                 metrics.ascent(),
                 metrics.descent(),
@@ -390,15 +429,23 @@ impl MathRowBlock {
         let is_rtl = !self.base.style.writing_mode.is_bidi_ltr();
         let mut fragments = Vec::new();
         let mut inline_cursor = if is_rtl { total_inline } else { Au::zero() };
-        for (child, output) in self.children.iter().zip(outputs) {
+        for (index, (child, output)) in self.children.iter().zip(outputs).enumerate() {
             let mut output = output.unwrap();
             if child.borrow().is_in_flow() {
-                let x = if is_rtl {
-                    inline_cursor -= output.metrics.size.inline;
-                    inline_cursor
+                let (lspace, rspace) = if apply_op_spacing {
+                    properties[index].map_or((Au::zero(), Au::zero()), |p| (p.lspace, p.rspace))
                 } else {
+                    (Au::zero(), Au::zero())
+                };
+                let x = if is_rtl {
+                    inline_cursor -= lspace + output.metrics.size.inline;
                     let pos = inline_cursor;
-                    inline_cursor += output.metrics.size.inline;
+                    inline_cursor -= rspace;
+                    pos
+                } else {
+                    inline_cursor += lspace;
+                    let pos = inline_cursor;
+                    inline_cursor += output.metrics.size.inline + rspace;
                     pos
                 };
                 translate_fragments(&mut output.fragments, x, ascent - output.metrics.ascent());

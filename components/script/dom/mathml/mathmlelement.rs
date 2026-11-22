@@ -89,7 +89,9 @@ impl VirtualMethods for MathMLElement {
             | local_name!("depth")
             | local_name!("linethickness")
             | local_name!("lspace")
-            | local_name!("rspace") => {
+            | local_name!("rspace")
+            | local_name!("minsize")
+            | local_name!("maxsize") => {
                 let value_str = &value.str();
                 let parser = &mut cssparser::Parser::new(value_str);
                 let doc = self.owner_document();
@@ -169,6 +171,9 @@ impl VirtualMethods for MathMLElement {
             | local_name!("depth")
             | local_name!("lspace")
             | local_name!("rspace")
+            | local_name!("minsize")
+            | local_name!("maxsize")
+            | local_name!("form")
             | local_name!("stretchy")
             | local_name!("symmetric")
             | local_name!("largeop")

@@ -63,6 +63,10 @@ pub(crate) struct MathOperatorProperties {
     pub movablelimits: bool,
     /// Whether the operator has `accent="true"` (or dictionary default).
     pub accent: bool,
+    /// Resolved leading space (`lspace`) of the core `<mo>` operator.
+    pub lspace: Au,
+    /// Resolved trailing space (`rspace`) of the core `<mo>` operator.
+    pub rspace: Au,
 }
 
 /// Measurements in the parent's logical coordinate system. Returned results

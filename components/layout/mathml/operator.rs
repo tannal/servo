@@ -2,11 +2,15 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
-//! Operator capability queries, OpenType MATH glyph stretching (both vertical
-//! and horizontal, plus display-style large operators), and text-layout fallback.
+//! Operator capability queries, W3C MathML Core operator dictionary lookup,
+//! OpenType MATH glyph stretching (vertical, horizontal, and display-style largeop),
+//! and text-layout fallback.
 //!
-//! See [Core operators](https://w3c.github.io/mathml-core/#operator-fence-separator-or-accent-mo)
+//! See [Core operators](https://w3c.github.io/mathml-core/#operator-fence-separator-or-accent-mo),
+//! [Embellished operators](https://w3c.github.io/mathml-core/#embellished-operators),
 //! and [glyph stretching](https://w3c.github.io/mathml-core/#algorithms-for-glyph-stretching).
+
+use std::sync::atomic::{AtomicU8, Ordering};
 
 use app_units::Au;
 use euclid::num::Zero;
@@ -15,12 +19,20 @@ use layout_api::{LayoutElement, LayoutNode};
 use malloc_size_of_derive::MallocSizeOf;
 use script::layout_dom::ServoLayoutNode;
 use servo_arc::Arc as ServoArc;
-use style::context::SharedStyleContext;
-use style::dom::NodeInfo;
-use style::properties::ComputedValues;
+use style::attr::AttrValue;
+use style::context::{SharedStyleContext, TreeCountingCaches};
+use style::dom::{DummyElementContext, NodeInfo};
+use style::properties::{ComputedValues, StyleBuilder};
+use style::rule_cache::RuleCacheConditions;
+use style::rule_tree::RuleCascadeFlags;
+use style::stylesheets::container_rule::ContainerSizeQuery;
 use style::values::computed::font::MathStyle;
+use style::values::computed::{Context, LengthPercentage, ToComputedValue};
 use web_atoms::{local_name, ns};
 
+use super::operator_dictionary::{
+    OperatorDictionaryEntry, OperatorForm, is_inline_stretch_operator, lookup_operator,
+};
 use crate::context::LayoutContext;
 use crate::dom::WeakLayoutBox;
 use crate::dom_traversal::NodeAndStyleInfo;
@@ -37,84 +49,20 @@ use crate::sizing::{ComputeInlineContentSizes, InlineContentSizesResult};
 use crate::style_ext::LayoutStyle;
 use crate::{ConstraintSpace, ContainingBlock};
 
-/// Operators that default to `stretchy="true"` in the MathML Core operator dictionary.
-fn is_default_stretchy_char(ch: char) -> bool {
-    matches!(
-        ch,
-        '(' | ')' | '[' | ']' | '{' | '}' | '|' |
-         // Unicode Fences & Angle Brackets
-         '⟨' | '⟩' | '〈' | '〉' | '⌊' | '⌋' | '⌈' | '⌉' | '‖' | '⦠' | '⦡' |
-         // Arrows
-         '←' | '→' | '↔' | '⇐' | '⇒' | '⇔' | '⟵' | '⟶' | '⟷' | '↑' | '↓' | '↕' |
-         '⇑' | '⇓' | '⇕' | '↦' | '↩' | '↪' | '↼' | '↽' | '⇀' | '⇁' | '⇌' | '⇋' |
-         // Accents / Over-Under Fences
-         '‾' | '_' | '^' | '~' | 'ˆ' | 'ˇ' | '˜' | '¯' | '⁀' | '⏞' | '⏟' | '⏠' | '⏡' |
-         '⎴' | '⎵' | '⏜' | '⏝' | '⏢'
-    ) || INLINE_STRETCH_OPERATORS.binary_search(&(ch as u32)).is_ok()
-}
-
-/// Operators that default to `largeop="true"` in the MathML Core operator dictionary.
-fn is_default_largeop_char(ch: char) -> bool {
-    matches!(
-        ch,
-        '∫' | '∬' | '∭' | '∮' | '∯' | '∰' | '∱' | '∲' | '∳'
-            | '∑' | '∏' | '∐'
-            | '⋀' | '⋁' | '⋂' | '⋃'
-            | '⨀' | '⨁' | '⨂' | '⨃' | '⨄' | '⨅' | '⨆' | '⨇' | '⨈' | '⨉' | '⨊' | '⨋'
-            | '⨌' | '⨍' | '⨎' | '⨏' | '⨐' | '⨑' | '⨒' | '⨓' | '⨔' | '⨕' | '⨖' | '⨗' | '⨘'
-            | '⨙' | '⨚' | '⨛' | '⨜' | '⫼' | '⫿'
-    )
-}
-
-/// Operators that default to `movablelimits="true"` in the MathML Core operator dictionary.
-fn is_default_movablelimits_char(ch: char) -> bool {
-    matches!(
-        ch,
-        '∑' | '∏' | '∐'
-            | '⋀' | '⋁' | '⋂' | '⋃'
-            | '⨀' | '⨁' | '⨂' | '⨃' | '⨄' | '⨅' | '⨆' | '⨇' | '⨈' | '⨉'
-    )
-}
-
-/// Operators that default to `accent="true"` in the MathML Core operator dictionary.
-fn is_default_accent_char(ch: char) -> bool {
-    matches!(
-        ch,
-        '^' | '_' | '~' | '¯' | '´' | '`' | '¨' | '˙' | 'ˆ' | 'ˇ' | 'ˉ' | '˘' | '˚' | '˜'
-            | '‾' | '⏞' | '⏟' | '⏠' | '⏡' | '⏜' | '⏝' | '→' | '←' | '↔'
-            | '\u{0300}'..='\u{036F}'
-            | '\u{20D0}'..='\u{20FF}'
-    )
-}
-
-/// Operators that default to `symmetric="true"` in the MathML Core operator dictionary.
-fn is_default_symmetric_char(ch: char) -> bool {
-    matches!(
-        ch,
-        '(' | ')' | '[' | ']' | '{' | '}' | '|' | '‖'
-            | '⟨' | '⟩' | '〈' | '〉' | '⌊' | '⌋' | '⌈' | '⌉'
-            | '∫' | '∬' | '∭' | '∮' | '∯' | '∰' | '∑' | '∏' | '∐'
-            | '↑' | '↓' | '↕' | '⇑' | '⇓' | '⇕'
-    )
-}
-
-fn collect_text_content<'dom>(info: &NodeAndStyleInfo<'dom>) -> String {
+/// Collect text content and check whether the `<mo>` has ONLY text children.
+/// Per MathML Core §3.2.4.1, an `<mo>` has inline stretch axis only if it
+/// contains only text content made of a single character `c`.
+fn collect_operator_text<'dom>(info: &NodeAndStyleInfo<'dom>) -> (String, bool) {
     let mut text = String::new();
+    let mut only_text = true;
     for child in info.node.flat_tree_children() {
         if child.is_text_node() {
             text.push_str(&child.text_content());
+        } else {
+            only_text = false;
         }
     }
-    text
-}
-
-struct ParsedOperatorFlags {
-    operator_char: Option<char>,
-    stretchy: bool,
-    symmetric: bool,
-    largeop: bool,
-    movablelimits: bool,
-    accent: bool,
+    (text, only_text)
 }
 
 fn parse_bool_attr<'dom, E: LayoutElement<'dom>>(
@@ -131,82 +79,236 @@ fn parse_bool_attr<'dom, E: LayoutElement<'dom>>(
     }
 }
 
-fn parse_operator_flags(info: &NodeAndStyleInfo, text_content: &str) -> ParsedOperatorFlags {
-    let mut flags = ParsedOperatorFlags {
-        operator_char: None,
-        stretchy: false,
-        symmetric: false,
-        largeop: false,
-        movablelimits: false,
-        accent: false,
-    };
-    let Some(element) = info.node.as_element() else {
-        return flags;
-    };
-    if element.local_name() != &local_name!("mo") {
-        return flags;
+fn parse_form_attr<'dom, E: LayoutElement<'dom>>(element: &E) -> Option<OperatorForm> {
+    let value = element.attribute_as_str(&ns!(), &local_name!("form"))?;
+    if value.eq_ignore_ascii_case("prefix") {
+        Some(OperatorForm::Prefix)
+    } else if value.eq_ignore_ascii_case("infix") {
+        Some(OperatorForm::Infix)
+    } else if value.eq_ignore_ascii_case("postfix") {
+        Some(OperatorForm::Postfix)
+    } else {
+        None
     }
-
-    let trimmed = text_content.trim();
-    let mut characters = trimmed.chars();
-    let ch = characters.next().filter(|_| characters.next().is_none());
-    flags.operator_char = ch;
-
-    flags.stretchy = parse_bool_attr(&element, &local_name!("stretchy"))
-        .unwrap_or_else(|| ch.is_some_and(is_default_stretchy_char));
-    flags.symmetric = parse_bool_attr(&element, &local_name!("symmetric"))
-        .unwrap_or_else(|| ch.is_some_and(is_default_symmetric_char));
-    flags.largeop = parse_bool_attr(&element, &local_name!("largeop"))
-        .unwrap_or_else(|| ch.is_some_and(is_default_largeop_char));
-    flags.movablelimits = parse_bool_attr(&element, &local_name!("movablelimits"))
-        .unwrap_or_else(|| ch.is_some_and(is_default_movablelimits_char));
-    flags.accent = parse_bool_attr(&element, &local_name!("accent"))
-        .unwrap_or_else(|| ch.is_some_and(is_default_accent_char));
-
-    // Special case: multi-char operators like "lim", "max", "min", "sup", "inf", "det", "gcd"
-    // default to movablelimits="true" per the operator dictionary.
-    if ch.is_none()
-        && parse_bool_attr(&element, &local_name!("movablelimits")).is_none()
-        && matches!(
-            trimmed,
-            "lim" | "liminf" | "limsup" | "max" | "min" | "sup" | "inf" | "det" | "gcd" | "Pr"
-        )
-    {
-        flags.movablelimits = true;
-    }
-
-    flags
 }
 
-/// Core operator state plus the IFC used when not painting a stretched glyph.
+fn resolve_length_attr<'dom, E: LayoutElement<'dom>>(
+    element: &E,
+    attr_name: &web_atoms::LocalName,
+    context: &SharedStyleContext,
+    style: &ServoArc<ComputedValues>,
+) -> Option<LengthPercentage> {
+    let attr = element.attribute(&ns!(), attr_name)?;
+    let specified = match attr {
+        AttrValue::LengthPercentage(_, lp) => lp.as_ref()?,
+        _ => return None,
+    };
+    let mut rule_cache_conditions = RuleCacheConditions::default();
+    let mut tree_counting_caches = TreeCountingCaches::default();
+    let style_builder = StyleBuilder::new(
+        context.stylist.device(),
+        Some(context.stylist),
+        Some(style),
+        None,
+        None,
+        false,
+    );
+    let computed_context = Context::new(
+        style_builder,
+        context.quirks_mode(),
+        &mut rule_cache_conditions,
+        ContainerSizeQuery::none(),
+        RuleCascadeFlags::empty(),
+        &DummyElementContext,
+        &mut tree_counting_caches,
+    );
+    Some(specified.to_computed_value(&computed_context))
+}
+
+const FORM_INFIX: u8 = 0;
+const FORM_PREFIX: u8 = 1;
+const FORM_POSTFIX: u8 = 2;
+
+fn encode_form(form: OperatorForm) -> u8 {
+    match form {
+        OperatorForm::Infix => FORM_INFIX,
+        OperatorForm::Prefix => FORM_PREFIX,
+        OperatorForm::Postfix => FORM_POSTFIX,
+    }
+}
+
+fn decode_form(val: u8) -> OperatorForm {
+    match val {
+        FORM_PREFIX => OperatorForm::Prefix,
+        FORM_POSTFIX => OperatorForm::Postfix,
+        _ => OperatorForm::Infix,
+    }
+}
+
+/// Core `<mo>` operator box with W3C MathML Core operator dictionary lookup,
+/// embellished operator form tracking, `lspace`/`rspace`/`minsize`/`maxsize`,
+/// and OpenType MATH glyph stretching.
 #[derive(Debug, MallocSizeOf)]
 pub(crate) struct MathOperatorBlock {
     pub base: LayoutBoxBase,
     pub inline_formatting_context: InlineFormattingContext,
-    pub is_stretchy: bool,
+    /// Raw text content of `<mo>`.
+    content: String,
+    /// Single character `c` when `<mo>` contains ONLY text content made of a
+    /// single character (per MathML Core §3.2.4.1).
     pub operator_char: Option<char>,
-    symmetric: bool,
-    largeop: bool,
-    movablelimits: bool,
-    accent: bool,
+    /// Explicit `form` attribute (`prefix`/`infix`/`postfix`), if present.
+    explicit_form: Option<OperatorForm>,
+    /// Inferred form from the enclosing grouping element (`MathRowBlock`).
+    inferred_form: AtomicU8,
+    explicit_stretchy: Option<bool>,
+    explicit_symmetric: Option<bool>,
+    explicit_largeop: Option<bool>,
+    explicit_movablelimits: Option<bool>,
+    explicit_accent: Option<bool>,
+    #[ignore_malloc_size_of = "LengthPercentage does not allocate on the heap"]
+    explicit_lspace: Option<LengthPercentage>,
+    #[ignore_malloc_size_of = "LengthPercentage does not allocate on the heap"]
+    explicit_rspace: Option<LengthPercentage>,
+    #[ignore_malloc_size_of = "LengthPercentage does not allocate on the heap"]
+    explicit_minsize: Option<LengthPercentage>,
+    #[ignore_malloc_size_of = "LengthPercentage does not allocate on the heap"]
+    explicit_maxsize: Option<LengthPercentage>,
 }
 
 impl MathOperatorBlock {
     pub(crate) fn construct(
+        context: &LayoutContext,
         info: &NodeAndStyleInfo,
         inline_formatting_context: InlineFormattingContext,
     ) -> Self {
-        let text_content = collect_text_content(info);
-        let flags = parse_operator_flags(info, &text_content);
+        let (content, only_text) = collect_operator_text(info);
+        let operator_char = if only_text {
+            let mut chars = content.chars();
+            chars.next().filter(|_| chars.next().is_none())
+        } else {
+            None
+        };
+
+        let (
+            explicit_form,
+            explicit_stretchy,
+            explicit_symmetric,
+            explicit_largeop,
+            explicit_movablelimits,
+            explicit_accent,
+            explicit_lspace,
+            explicit_rspace,
+            explicit_minsize,
+            explicit_maxsize,
+        ) = if let Some(element) = info.node.as_element() {
+            (
+                parse_form_attr(&element),
+                parse_bool_attr(&element, &local_name!("stretchy")),
+                parse_bool_attr(&element, &local_name!("symmetric")),
+                parse_bool_attr(&element, &local_name!("largeop")),
+                parse_bool_attr(&element, &local_name!("movablelimits")),
+                parse_bool_attr(&element, &local_name!("accent")),
+                resolve_length_attr(
+                    &element,
+                    &local_name!("lspace"),
+                    &context.style_context,
+                    &info.style,
+                ),
+                resolve_length_attr(
+                    &element,
+                    &local_name!("rspace"),
+                    &context.style_context,
+                    &info.style,
+                ),
+                resolve_length_attr(
+                    &element,
+                    &local_name!("minsize"),
+                    &context.style_context,
+                    &info.style,
+                ),
+                resolve_length_attr(
+                    &element,
+                    &local_name!("maxsize"),
+                    &context.style_context,
+                    &info.style,
+                ),
+            )
+        } else {
+            (None, None, None, None, None, None, None, None, None, None)
+        };
+
         Self {
             base: LayoutBoxBase::new(info.into(), info.style.clone()),
             inline_formatting_context,
-            is_stretchy: flags.stretchy,
-            operator_char: flags.operator_char,
-            symmetric: flags.symmetric,
-            largeop: flags.largeop,
-            movablelimits: flags.movablelimits,
-            accent: flags.accent,
+            content,
+            operator_char,
+            explicit_form,
+            inferred_form: AtomicU8::new(FORM_INFIX),
+            explicit_stretchy,
+            explicit_symmetric,
+            explicit_largeop,
+            explicit_movablelimits,
+            explicit_accent,
+            explicit_lspace,
+            explicit_rspace,
+            explicit_minsize,
+            explicit_maxsize,
+        }
+    }
+
+    /// Set the form inferred from this embellished operator's position inside
+    /// its enclosing grouping element (MathML Core §3.2.4.2).
+    pub(crate) fn set_inferred_form(&self, form: OperatorForm) {
+        self.inferred_form.store(encode_form(form), Ordering::Relaxed);
+    }
+
+    fn effective_form(&self) -> OperatorForm {
+        self.explicit_form
+            .unwrap_or_else(|| decode_form(self.inferred_form.load(Ordering::Relaxed)))
+    }
+
+    fn dictionary_entry(&self) -> OperatorDictionaryEntry {
+        lookup_operator(&self.content, self.effective_form())
+    }
+
+    fn is_symmetric(&self) -> bool {
+        self.explicit_symmetric
+            .unwrap_or_else(|| self.dictionary_entry().symmetric)
+    }
+
+    pub(crate) fn operator_properties(&self) -> MathOperatorProperties {
+        let dict = self.dictionary_entry();
+        let font_size = Au::from_f32_px(self.base.style.get_font().font_size.computed_size().px());
+        let lspace = self
+            .explicit_lspace
+            .as_ref()
+            .map(|lp| lp.to_used_value(font_size).max(Au::zero()))
+            .unwrap_or_else(|| OperatorDictionaryEntry::space_to_au(dict.lspace_eighteenths, font_size));
+        let rspace = self
+            .explicit_rspace
+            .as_ref()
+            .map(|lp| lp.to_used_value(font_size).max(Au::zero()))
+            .unwrap_or_else(|| OperatorDictionaryEntry::space_to_au(dict.rspace_eighteenths, font_size));
+
+        let stretch_axis = if self
+            .operator_char
+            .is_some_and(is_inline_stretch_operator)
+        {
+            MathStretchAxis::Inline
+        } else {
+            MathStretchAxis::Block
+        };
+
+        MathOperatorProperties {
+            stretchy: self.explicit_stretchy.unwrap_or(dict.stretchy)
+                && self.operator_char.is_some(),
+            stretch_axis,
+            largeop: self.explicit_largeop.unwrap_or(dict.largeop),
+            movablelimits: self.explicit_movablelimits.unwrap_or(dict.movablelimits),
+            accent: self.explicit_accent.unwrap_or(dict.accent),
+            lspace,
+            rspace,
         }
     }
 
@@ -215,41 +317,48 @@ impl MathOperatorBlock {
         layout_context: &LayoutContext,
         constraint_space: &ConstraintSpace,
     ) -> InlineContentSizesResult {
-        self.base.cached_inline_content_sizes_with(constraint_space, || {
-            let mut result = self
-                .inline_formatting_context
-                .compute_inline_content_sizes(layout_context, constraint_space);
-            // If this is a largeop in display style, ensure intrinsic width accounts for the display variant.
-            if self.largeop
-                && self.base.style.get_font().math_style == MathStyle::Normal
-                && let Some(ch) = self.operator_char
-            {
-                let font_group = layout_context
-                    .font_context
-                    .font_group(self.base.style.clone_font());
-                if let Some(font) = font_group.first(&layout_context.font_context) {
-                    let min_height = font
-                        .math_constants(true)
-                        .map(|c| c.display_operator_min_height)
-                        .unwrap_or_else(|| {
-                            Au::from_f32_px(self.base.style.get_font().font_size.computed_size().px() * 1.414)
-                        });
-                    if let Some(stretched) =
-                        font.math_stretch_glyph(ch, MathStretchDirection::Vertical, min_height)
-                    {
-                        let pbm = LayoutStyle::Default(&self.base.style)
-                            .content_box_sizes_and_padding_border_margin(&constraint_space.into())
-                            .pbm;
-                        let extra = pbm.padding_border_sums.inline
-                            + pbm.margin.auto_is(Au::zero).inline_sum();
-                        let width = stretched.inline_size + extra;
-                        result.sizes.min_content = result.sizes.min_content.max(width);
-                        result.sizes.max_content = result.sizes.max_content.max(width);
+        self.base
+            .cached_inline_content_sizes_with(constraint_space, || {
+                let mut result = self
+                    .inline_formatting_context
+                    .compute_inline_content_sizes(layout_context, constraint_space);
+                let props = self.operator_properties();
+                if props.largeop
+                    && self.base.style.get_font().math_style == MathStyle::Normal
+                    && let Some(ch) = self.operator_char
+                {
+                    let font_group = layout_context
+                        .font_context
+                        .font_group(self.base.style.clone_font());
+                    if let Some(font) = font_group.first(&layout_context.font_context) {
+                        let min_height = font
+                            .math_constants(true)
+                            .map(|c| c.display_operator_min_height)
+                            .filter(|&h| h > Au::zero())
+                            .unwrap_or_else(|| {
+                                Au::from_f32_px(
+                                    self.base.style.get_font().font_size.computed_size().px()
+                                        * 1.414,
+                                )
+                            });
+                        if let Some(stretched) =
+                            font.math_stretch_glyph(ch, MathStretchDirection::Vertical, min_height)
+                        {
+                            let pbm = LayoutStyle::Default(&self.base.style)
+                                .content_box_sizes_and_padding_border_margin(
+                                    &constraint_space.into(),
+                                )
+                                .pbm;
+                            let extra = pbm.padding_border_sums.inline
+                                + pbm.margin.auto_is(Au::zero).inline_sum();
+                            let width = stretched.inline_size + extra;
+                            result.sizes.min_content = result.sizes.min_content.max(width);
+                            result.sizes.max_content = result.sizes.max_content.max(width);
+                        }
                     }
                 }
-            }
-            result
-        })
+                result
+            })
     }
 
     pub(crate) fn layout(
@@ -266,11 +375,8 @@ impl MathOperatorBlock {
             .pbm;
         let is_display_style = style.get_font().math_style == MathStyle::Normal;
         let props = self.operator_properties();
+        let is_symmetric = self.is_symmetric();
 
-        // Check if we should paint via OpenType MATH glyph stretching:
-        // 1. Display-style largeop (`largeop="true"` and `math-style: normal`)
-        // 2. Stretchy block operator with a Block target
-        // 3. Stretchy inline operator with an Inline target
         if let Some(ch) = self.operator_char {
             let font_group = layout_context.font_context.font_group(style.clone_font());
             if let Some(font) = font_group.first(&layout_context.font_context) {
@@ -279,8 +385,36 @@ impl MathOperatorBlock {
                     .map(|c| c.axis_height)
                     .unwrap_or_else(|| font.metrics().x_height / 2);
 
+                let natural_span = |dir: MathStretchDirection| -> Au {
+                    font.math_glyph_extents(ch)
+                        .map(|ext| match dir {
+                            MathStretchDirection::Horizontal => ext.advance.max(Au::zero()),
+                            MathStretchDirection::Vertical => {
+                                (ext.ascent + ext.descent).max(Au::zero())
+                            },
+                        })
+                        .unwrap_or_else(|| {
+                            Au::from_f32_px(style.get_font().font_size.computed_size().px())
+                        })
+                };
+
+                let clamp_min_max = |mut span: Au, dir: MathStretchDirection| -> Au {
+                    let base_span = natural_span(dir);
+                    let min_size = self
+                        .explicit_minsize
+                        .as_ref()
+                        .map(|lp| lp.to_used_value(base_span).max(Au::zero()))
+                        .unwrap_or(Au::zero());
+                    span = span.max(min_size);
+                    if let Some(ref max_lp) = self.explicit_maxsize {
+                        let max_size = max_lp.to_used_value(base_span).max(min_size);
+                        span = span.min(max_size);
+                    }
+                    span
+                };
+
                 let stretch_request: Option<(MathStretchDirection, Au, Option<(Au, Au)>)> =
-                    if self.largeop && is_display_style {
+                    if props.largeop && is_display_style {
                         let min_height = font
                             .math_constants(true)
                             .map(|c| c.display_operator_min_height)
@@ -300,22 +434,29 @@ impl MathOperatorBlock {
                                     mut descent,
                                 }),
                             ) => {
-                                if self.symmetric {
+                                if is_symmetric {
                                     let half = (ascent - axis).max(descent + axis);
                                     ascent = half + axis;
                                     descent = half - axis;
                                 }
-                                let total = (ascent + descent).max(Au::zero());
+                                let total = clamp_min_max(
+                                    (ascent + descent).max(Au::zero()),
+                                    MathStretchDirection::Vertical,
+                                );
                                 (total > Au::zero()).then_some((
                                     MathStretchDirection::Vertical,
                                     total,
                                     Some((ascent, descent)),
                                 ))
                             },
-                            (MathStretchAxis::Inline, Some(MathStretchTarget::Inline(width)))
-                                if width > Au::zero() =>
-                            {
-                                Some((MathStretchDirection::Horizontal, width, None))
+                            (MathStretchAxis::Inline, Some(MathStretchTarget::Inline(width))) => {
+                                let clamped =
+                                    clamp_min_max(width, MathStretchDirection::Horizontal);
+                                (clamped > Au::zero()).then_some((
+                                    MathStretchDirection::Horizontal,
+                                    clamped,
+                                    None,
+                                ))
                             },
                             _ => None,
                         }
@@ -329,28 +470,21 @@ impl MathOperatorBlock {
                     let glyph_height = (stretched.ascent + stretched.descent).max(Au::zero());
                     let (final_ascent, final_descent, glyph_baseline_y) =
                         if direction == MathStretchDirection::Vertical {
-                            if self.largeop && is_display_style {
-                                // Center large operator vertically around the math axis.
+                            if props.largeop && is_display_style {
                                 let half = glyph_height / 2;
                                 let ascent = half + axis;
                                 let descent = glyph_height - ascent;
-                                let baseline_y = ascent - (stretched.ascent - half) - axis
-                                    + (stretched.ascent - half);
-                                // Exact placement: top of glyph ink is at `glyph_baseline_y - stretched.ascent = 0`.
-                                let _ = baseline_y;
                                 (ascent, descent, stretched.ascent)
                             } else if let Some((req_ascent, req_descent)) = block_target {
-                                if self.symmetric {
+                                if is_symmetric {
                                     let half = glyph_height / 2;
                                     let ascent = half + axis;
                                     let descent = glyph_height - ascent;
                                     (ascent, descent, stretched.ascent)
                                 } else {
-                                    // Align to cover requested ascent/descent.
                                     let ascent = req_ascent.max(stretched.ascent);
                                     let descent = (glyph_height - ascent).max(req_descent);
-                                    let y_center_shift =
-                                        ((ascent + descent) - glyph_height) / 2;
+                                    let y_center_shift = ((ascent + descent) - glyph_height) / 2;
                                     (ascent, descent, y_center_shift + stretched.ascent)
                                 }
                             } else {
@@ -421,8 +555,6 @@ impl MathOperatorBlock {
             natural_baseline,
         );
 
-        // Populate tight ink extents, italic correction, and top accent attachment
-        // from HarfBuzz when this is a single-character operator.
         if let Some(ch) = self.operator_char {
             let font_group = layout_context.font_context.font_group(style.clone_font());
             if let Some(font) = font_group.first(&layout_context.font_context) {
@@ -438,23 +570,6 @@ impl MathOperatorBlock {
         MathLayoutResult::from_content(&self.base, containing_block, &pbm, fragments, metrics, None)
     }
 
-    pub(crate) fn operator_properties(&self) -> MathOperatorProperties {
-        MathOperatorProperties {
-            stretchy: self.is_stretchy && self.operator_char.is_some(),
-            stretch_axis: if self
-                .operator_char
-                .is_some_and(|c| INLINE_STRETCH_OPERATORS.binary_search(&(c as u32)).is_ok())
-            {
-                MathStretchAxis::Inline
-            } else {
-                MathStretchAxis::Block
-            },
-            largeop: self.largeop,
-            movablelimits: self.movablelimits,
-            accent: self.accent,
-        }
-    }
-
     pub(crate) fn attached_to_tree(&self, _layout_box: WeakLayoutBox) {}
 
     pub(crate) fn repair_style(
@@ -464,46 +579,34 @@ impl MathOperatorBlock {
         new_style: &ServoArc<ComputedValues>,
     ) {
         self.base.repair_style(new_style);
-        if node
-            .as_element()
-            .is_some_and(|element| element.local_name() == &local_name!("mo"))
+        if let Some(element) = node.as_element()
+            && element.local_name() == &local_name!("mo")
         {
             let info = NodeAndStyleInfo::new(*node, new_style.clone());
-            let flags = parse_operator_flags(&info, &collect_text_content(&info));
-            self.is_stretchy = flags.stretchy;
-            self.operator_char = flags.operator_char;
-            self.symmetric = flags.symmetric;
-            self.largeop = flags.largeop;
-            self.movablelimits = flags.movablelimits;
-            self.accent = flags.accent;
+            let (content, only_text) = collect_operator_text(&info);
+            self.operator_char = if only_text {
+                let mut chars = content.chars();
+                chars.next().filter(|_| chars.next().is_none())
+            } else {
+                None
+            };
+            self.content = content;
+            self.explicit_form = parse_form_attr(&element);
+            self.explicit_stretchy = parse_bool_attr(&element, &local_name!("stretchy"));
+            self.explicit_symmetric = parse_bool_attr(&element, &local_name!("symmetric"));
+            self.explicit_largeop = parse_bool_attr(&element, &local_name!("largeop"));
+            self.explicit_movablelimits = parse_bool_attr(&element, &local_name!("movablelimits"));
+            self.explicit_accent = parse_bool_attr(&element, &local_name!("accent"));
+            self.explicit_lspace =
+                resolve_length_attr(&element, &local_name!("lspace"), context, new_style);
+            self.explicit_rspace =
+                resolve_length_attr(&element, &local_name!("rspace"), context, new_style);
+            self.explicit_minsize =
+                resolve_length_attr(&element, &local_name!("minsize"), context, new_style);
+            self.explicit_maxsize =
+                resolve_length_attr(&element, &local_name!("maxsize"), context, new_style);
         }
         self.inline_formatting_context
             .repair_style(context, node, new_style);
     }
 }
-
-// https://w3c.github.io/mathml-core/#operator-dictionary
-// Intrinsic inline stretch axes, independent of operator form or stretchiness.
-const INLINE_STRETCH_OPERATORS: &[u32] = &[
-    0x003D, 0x005E, 0x005F, 0x007E, 0x00AF, 0x02C6, 0x02C7, 0x02C9, 0x02CD, 0x02DC, 0x02F7, 0x0302,
-    0x0332, 0x203E, 0x20D0, 0x20D1, 0x20D6, 0x20D7, 0x20E1, 0x2190, 0x2192, 0x2194, 0x2198, 0x2199,
-    0x219A, 0x219B, 0x219C, 0x219D, 0x219E, 0x21A0, 0x21A2, 0x21A3, 0x21A4, 0x21A6, 0x21A9, 0x21AA,
-    0x21AB, 0x21AC, 0x21AD, 0x21AE, 0x21B4, 0x21B9, 0x21BC, 0x21BD, 0x21C0, 0x21C1, 0x21C4, 0x21C6,
-    0x21C7, 0x21C9, 0x21CB, 0x21CC, 0x21CD, 0x21CE, 0x21CF, 0x21D0, 0x21D2, 0x21D4, 0x21DA, 0x21DB,
-    0x21DC, 0x21DD, 0x21E0, 0x21E2, 0x21E4, 0x21E5, 0x21E6, 0x21E8, 0x21F0, 0x21F4, 0x21F6, 0x21F7,
-    0x21F8, 0x21F9, 0x21FA, 0x21FB, 0x21FC, 0x21FD, 0x21FE, 0x21FF, 0x2322, 0x2323, 0x23B4, 0x23B5,
-    0x23DC, 0x23DD, 0x23DE, 0x23DF, 0x23E0, 0x23E1, 0x2500, 0x2794, 0x2799, 0x279B, 0x279C, 0x279D,
-    0x279E, 0x279F, 0x27A0, 0x27A1, 0x27A5, 0x27A6, 0x27A8, 0x27A9, 0x27AA, 0x27AB, 0x27AC, 0x27AD,
-    0x27AE, 0x27AF, 0x27B1, 0x27B3, 0x27B5, 0x27B8, 0x27BA, 0x27BB, 0x27BC, 0x27BD, 0x27BE, 0x27F4,
-    0x27F5, 0x27F6, 0x27F7, 0x27F8, 0x27F9, 0x27FA, 0x27FB, 0x27FC, 0x27FD, 0x27FE, 0x27FF, 0x2900,
-    0x2901, 0x2902, 0x2903, 0x2904, 0x2905, 0x2906, 0x2907, 0x290C, 0x290D, 0x290E, 0x290F, 0x2910,
-    0x2911, 0x2914, 0x2915, 0x2916, 0x2917, 0x2918, 0x2919, 0x291A, 0x291B, 0x291C, 0x291D, 0x291E,
-    0x291F, 0x2920, 0x2942, 0x2943, 0x2944, 0x2945, 0x2946, 0x2947, 0x2948, 0x294A, 0x294B, 0x294E,
-    0x2950, 0x2952, 0x2953, 0x2956, 0x2957, 0x295A, 0x295B, 0x295E, 0x295F, 0x2962, 0x2964, 0x2966,
-    0x2967, 0x2968, 0x2969, 0x296A, 0x296B, 0x296C, 0x296D, 0x2970, 0x2971, 0x2972, 0x2973, 0x2974,
-    0x2975, 0x297C, 0x297D, 0x2B04, 0x2B05, 0x2B0C, 0x2B30, 0x2B31, 0x2B32, 0x2B33, 0x2B34, 0x2B35,
-    0x2B36, 0x2B37, 0x2B38, 0x2B39, 0x2B3A, 0x2B3B, 0x2B3C, 0x2B3D, 0x2B3E, 0x2B40, 0x2B41, 0x2B42,
-    0x2B43, 0x2B44, 0x2B45, 0x2B46, 0x2B47, 0x2B48, 0x2B49, 0x2B4A, 0x2B4B, 0x2B4C, 0x2B60, 0x2B62,
-    0x2B64, 0x2B6A, 0x2B6C, 0x2B70, 0x2B72, 0x2B7A, 0x2B7C, 0x2B80, 0x2B82, 0x2B84, 0x2B86, 0x2B95,
-    0xFE35, 0xFE36, 0xFE37, 0xFE38, 0x1EEF0, 0x1EEF1,
-];

@@ -25,6 +25,7 @@ pub(crate) mod mscripts;
 pub(crate) mod mspace;
 pub(crate) mod munder_mover;
 pub(crate) mod operator;
+pub(crate) mod operator_dictionary;
 pub(crate) mod text;
 
 use app_units::Au;
@@ -147,7 +148,7 @@ impl<'a, 'dom> TraversalHandler<'dom> for MathTraversalBuilder<'a, 'dom> {
                 }
                 let level_box = match block_builder.finish() {
                     BlockContainer::InlineFormattingContext(ifc) => {
-                        let operator_block = MathOperatorBlock::construct(info, ifc);
+                        let operator_block = MathOperatorBlock::construct(self.context, info, ifc);
                         ArcRefCell::new(MathLevelBox::Operator(ArcRefCell::new(operator_block)))
                     },
                     block_container => {
@@ -451,6 +452,59 @@ impl MathLevelBox {
             Self::Scripts(scripts) => scripts.borrow().operator_properties(),
             Self::UnderOver(under_over) => under_over.borrow().operator_properties(),
             _ => None,
+        }
+    }
+
+    /// Propagate an inferred `OperatorForm` (`prefix`/`infix`/`postfix`) down the
+    /// MathML Core §3.2.4.1 embellished-operator chain to its core `<mo>`.
+    pub(crate) fn set_inferred_operator_form(&self, form: operator_dictionary::OperatorForm) {
+        match self {
+            Self::Operator(operator) => operator.borrow().set_inferred_form(form),
+            Self::Row(row) => {
+                let row = row.borrow();
+                if let Some(index) = row.embellished_operator_index() {
+                    row.children[index].borrow().set_inferred_operator_form(form);
+                }
+            },
+            Self::Padded(padded) => {
+                let padded = padded.borrow();
+                if let Some(index) = padded.inner_row.embellished_operator_index() {
+                    padded.inner_row.children[index]
+                        .borrow()
+                        .set_inferred_operator_form(form);
+                }
+            },
+            Self::Fraction(fraction) => {
+                let fraction = fraction.borrow();
+                if let Some(numerator) = &fraction.numerator {
+                    numerator.borrow().set_inferred_operator_form(form);
+                } else if let Some(index) = fraction.inner_row.embellished_operator_index() {
+                    fraction.inner_row.children[index]
+                        .borrow()
+                        .set_inferred_operator_form(form);
+                }
+            },
+            Self::Scripts(scripts) => {
+                let scripts = scripts.borrow();
+                if let Some(base) = &scripts.base_child {
+                    base.borrow().set_inferred_operator_form(form);
+                } else if let Some(index) = scripts.inner_row.embellished_operator_index() {
+                    scripts.inner_row.children[index]
+                        .borrow()
+                        .set_inferred_operator_form(form);
+                }
+            },
+            Self::UnderOver(under_over) => {
+                let under_over = under_over.borrow();
+                if let Some(base) = &under_over.base_child {
+                    base.borrow().set_inferred_operator_form(form);
+                } else if let Some(index) = under_over.inner_row.embellished_operator_index() {
+                    under_over.inner_row.children[index]
+                        .borrow()
+                        .set_inferred_operator_form(form);
+                }
+            },
+            _ => {},
         }
     }
 
