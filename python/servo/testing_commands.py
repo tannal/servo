@@ -168,11 +168,19 @@ class MachCommands(CommandBase):
     @Command("test-fuzzing", description="Run the fuzzing replay suite", category="testing")
     @CommandArgument("--runner", default=None, help="Path to a local servo-fuzzing checkout")
     @CommandArgument("--testcases", default=None, help="Path to a testcase file or directory")
-    @CommandArgument("--bundle", default=None, help="Path or URL to a corpus archive (or Actions run URL)")
+    @CommandArgument(
+        "--bundle", default=None, help="Path, URL, or release spec for a corpus archive (or Actions run URL)"
+    )
     @CommandArgument("--force-download", default=False, action="store_true", help="Refresh cached bundle downloads")
     @CommandArgument("--signatures", default=None, help="Path to a signatures JSON file")
     @CommandArgument("--output", default=path.join("target", "fuzzing"), help="Directory for replay output")
     @CommandArgument("--timeout", default=None, type=float, help="Per-testcase timeout in seconds")
+    @CommandArgument(
+        "--timeouts",
+        choices=["include", "exclude"],
+        default=None,
+        help="Whether to run manifest-tagged timeout testcases (default: runner policy)",
+    )
     @CommandArgument("--jobs", default=None, type=int, help="Number of parallel worker processes")
     @CommandBase.allow_target_configuration
     @CommandBase.common_command_arguments(binary_selection=True)
@@ -186,6 +194,7 @@ class MachCommands(CommandBase):
         signatures: str | None = None,
         output: str = path.join("target", "fuzzing"),
         timeout: float | None = None,
+        timeouts: str | None = None,
         jobs: int | None = None,
         **kwargs: Any,
     ) -> int:
@@ -203,6 +212,7 @@ class MachCommands(CommandBase):
             self.build_env(),
             bundle=bundle,
             force_download=force_download,
+            timeouts=timeouts,
         )
 
     @Command("test-unit", description="Run unit tests", category="testing")

@@ -21,7 +21,7 @@ import zipfile
 from pathlib import Path, PurePosixPath
 
 RUNNER_REPOSITORY = "https://github.com/tannal/servo-fuzzing.git"
-RUNNER_REVISION = "437d30cd39295832bbd93498fc9f21d04978d141"
+RUNNER_REVISION = "89f8686aeb6aa4188026c367166de432daf92ad2"
 
 
 def obtain_actions_bundle(url: str, output: Path, env: dict[str, str]) -> Path:
@@ -122,7 +122,7 @@ def obtain_runner(cache: Path) -> Path:
             ["config", "remote.origin.promisor", "true"],
             ["config", "remote.origin.partialclonefilter", "blob:none"],
             ["fetch", "--quiet", "--depth=1", "--filter=blob:none", "origin", RUNNER_REVISION],
-            ["sparse-checkout", "set", "servo_fuzzing", "signatures", "testcases/corpus"],
+            ["sparse-checkout", "set", "servo_fuzzing", "signatures"],
             ["checkout", "--quiet", "--detach", RUNNER_REVISION],
         ):
             subprocess.run(["git", "-C", str(checkout), *args], check=True)
@@ -148,6 +148,7 @@ def replay(
     env: dict[str, str],
     bundle: str | None = None,
     force_download: bool = False,
+    timeouts: str | None = None,
 ) -> int:
     try:
         runner_path = (
@@ -163,7 +164,7 @@ def replay(
         return 2
 
     # Resolve local paths before switching cwd so callers can use paths relative
-    # to Servo. URLs must reach the runner unchanged.
+    # to Servo. URLs and symbolic release specs must reach the runner unchanged.
     args = [
         sys.executable,
         "-m",
@@ -183,9 +184,12 @@ def replay(
             except (OSError, ValueError, KeyError, zipfile.BadZipFile, subprocess.CalledProcessError) as error:
                 print(f"Error obtaining Actions bundle: {error}")
                 return 2
-        source = bundle if bundle.startswith(("https://", "http://")) else str(Path(bundle).resolve())
+        is_local_path = Path(bundle).exists() or "/" in bundle or "\\" in bundle or bundle.endswith((".tar.gz", ".tgz"))
+        source = (
+            bundle if bundle.startswith(("https://", "http://")) or not is_local_path else str(Path(bundle).resolve())
+        )
         args.extend(["--bundle", source])
-    for option, value in (("--timeout", timeout), ("--jobs", jobs)):
+    for option, value in (("--timeout", timeout), ("--timeouts", timeouts), ("--jobs", jobs)):
         if value is not None:
             args.extend([option, str(value)])
     if force_download:

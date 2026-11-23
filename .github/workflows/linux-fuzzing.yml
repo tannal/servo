@@ -22,6 +22,7 @@ env:
   RUST_BACKTRACE: 1
   SHELL: /bin/bash
   GST_PLUGIN_FEATURE_RANK: pulsesink:NONE,alsasink:NONE,jacksink:NONE,fakesink:MAX
+  FUZZING_BUNDLE: bundle-2026-11-23
 
 jobs:
   # Runs the underlying job (“workload”) on a self-hosted runner if available,
@@ -78,6 +79,12 @@ jobs:
         with:
           path: target/fuzzing-runner
           key: fuzzing-runner-${{ hashFiles('python/servo/fuzzing.py') }}
+      - name: Cache fuzzing bundle
+        if: ${{ runner.environment != 'self-hosted' }}
+        uses: actions/cache@v5
+        with:
+          path: ~/.cache/servo/fuzzing
+          key: fuzzing-bundle-${{ env.FUZZING_BUNDLE }}
       - name: Change Mirror Priorities
         if: ${{ runner.environment != 'self-hosted' }}
         uses: ./.github/actions/apt-mirrors
@@ -113,8 +120,9 @@ jobs:
             --bin ${{ inputs.binary-path }} \
             --profile ${{ inputs.profile }} \
             --output target/fuzzing \
+            --bundle ${{ env.FUZZING_BUNDLE }} \
+            --timeouts include \
             --jobs $(nproc) \
-            --force-download \
             ${{ inputs.fuzzing-args }}
       - name: Publish test summary
         if: ${{ always() }}
