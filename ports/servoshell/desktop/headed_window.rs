@@ -452,12 +452,17 @@ impl HeadedWindow {
 
         let position = input_method.position().to_f32();
         let toolbar_height = (self.toolbar_height() * self.hidpi_scale_factor()).0;
+        let x = position.min.x;
+        let y = position.min.y + toolbar_height;
+        let w = position.width().max(1.0);
+        let h = position.height().max(1.0);
+        eprintln!("[servoshell IME] show_ime was_visible={was_visible} area=({x:.1}, {y:.1}, {w:.1}x{h:.1})");
         if !was_visible {
             self.winit_window.set_ime_allowed(true);
         }
         self.winit_window.set_ime_cursor_area(
-            PhysicalPosition::new(position.min.x, position.min.y + toolbar_height),
-            PhysicalSize::new(position.width().max(1.0), position.height().max(1.0)),
+            PhysicalPosition::new(x, y),
+            PhysicalSize::new(w, h),
         );
     }
 
@@ -712,7 +717,9 @@ impl HeadedWindow {
                         winit::window::Theme::Dark => Theme::Dark,
                     });
                 },
-                WindowEvent::Ime(ime) => match ime {
+                WindowEvent::Ime(ime) => {
+                    eprintln!("[servoshell IME] winit event={ime:?}");
+                    match ime {
                     Ime::Enabled => {
                         webview.notify_input_event(InputEvent::Ime(ImeEvent::Composition(
                             servo::CompositionEvent {
@@ -757,6 +764,7 @@ impl HeadedWindow {
                             webview.notify_input_event(InputEvent::Ime(ImeEvent::Dismissed));
                         }
                     },
+                }
                 },
                 WindowEvent::DroppedFile(dropped_file) => {
                     if let Ok(url) = Url::from_file_path(&dropped_file) {

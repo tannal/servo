@@ -304,6 +304,7 @@ struct ActiveParleyEditor {
     blink_visible: bool,
     blink_timer: Option<OneshotTimerHandle>,
     last_caret: Option<EditRect>,
+    ime_rect_synced: bool,
 }
 
 thread_local! {
@@ -465,10 +466,19 @@ pub(crate) fn on_blink_timer(cx: &mut JSContext, editor_id: usize) {
         let visible = active.blink_visible;
         {
             let _realm = enter_auto_realm::<DomTypeHolder>(cx, &*global);
-            let _ = active
+            if let Ok(fb) = active
                 .instance
                 .servo_parley_editor_editor()
-                .call_handle_event(&mut active.store, &EditorEvent::SetCursorVisible(visible));
+                .call_handle_event(&mut active.store, &EditorEvent::SetCursorVisible(visible))
+            {
+                if fb.caret_rect.is_some() {
+                    active.last_caret = fb.caret_rect;
+                }
+            }
+        }
+        if !active.ime_rect_synced {
+            show_ime(cx, &mut active);
+            active.ime_rect_synced = true;
         }
         let handle = global.schedule_callback(
             OneshotTimerCallback::ParleyBlink(editor_id),
@@ -587,6 +597,7 @@ pub(crate) fn register_component(
         blink_visible: true,
         blink_timer: None,
         last_caret: None,
+        ime_rect_synced: false,
     };
     reset_blink_timer(editor_id, &mut active);
     put_editor(editor_id, active);
