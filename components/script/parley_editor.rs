@@ -21,9 +21,10 @@ use app_units::Au;
 use embedder_traits::{
     EmbedderControlRequest, EmbedderMsg, InputMethodRequest, InputMethodType,
 };
-use euclid::Point2D as TypedPoint2D;
+use euclid::{Point2D as TypedPoint2D, Rect as TypedRect, Size2D as TypedSize2D};
 use euclid::default::{Point2D, Rect as EuclidRect, Size2D, Transform2D};
 use fonts::{FontDataAndIndex, FontIdentifier};
+use icu_locale_core::LanguageIdentifier;
 use js::context::JSContext;
 use keyboard_types::{CompositionEvent as KeyboardCompositionEvent, CompositionState};
 use script_bindings::codegen::GenericUnionTypes::{
@@ -155,7 +156,15 @@ impl FontsHost for ParleyHostState {
         let font_style = window.resolved_font_style_query(cx, node, css_font)?;
         let font_context = self.global_scope.font_context();
         let font_group = font_context.font_group(font_style);
-        let font = font_group.first(&font_context)?;
+        let font = match query.sample_char {
+            Some(ch) => font_group.find_by_codepoint(
+                &font_context,
+                ch,
+                None,
+                LanguageIdentifier::UNKNOWN.language,
+            )?,
+            None => font_group.first(&font_context)?,
+        };
 
         let identifier = font.identifier().to_owned();
         let font_data_and_index = font.font_data_and_index().ok().cloned();
@@ -363,23 +372,31 @@ fn canvas_local_point(
     (css_x * scale_x, css_y * scale_y)
 }
 
-fn caret_viewport_point(
+fn caret_viewport_rect(
     cx: &mut JSContext,
     canvas: &HTMLCanvasElement,
     caret: Option<EditRect>,
-) -> Option<TypedPoint2D<Au, CSSPixel>> {
+) -> Option<TypedRect<Au, CSSPixel>> {
     let rect = canvas.upcast::<Node>().border_box(cx)?;
     let box_w = rect.size.width.to_f32_px();
     let box_h = rect.size.height.to_f32_px();
+    if box_w <= 0.0 || box_h <= 0.0 {
+        return None;
+    }
     let cw = canvas.Width().max(1) as f32;
     let ch = canvas.Height().max(1) as f32;
-    let (lx, ly) = match caret {
-        Some(c) => (c.x * (box_w / cw), (c.y + c.h) * (box_h / ch)),
-        None => (24.0, 44.0),
+    let sx = box_w / cw;
+    let sy = box_h / ch;
+    let (lx, ly, lw, lh) = match caret {
+        Some(c) => (c.x * sx, c.y * sy, (c.w * sx).max(2.0), (c.h * sy).max(20.0)),
+        None => (24.0 * sx, 24.0 * sy, 2.0, 24.0 * sy),
     };
-    Some(TypedPoint2D::new(
-        rect.origin.x + Au::from_f32_px(lx),
-        rect.origin.y + Au::from_f32_px(ly),
+    Some(TypedRect::new(
+        TypedPoint2D::new(
+            rect.origin.x + Au::from_f32_px(lx),
+            rect.origin.y + Au::from_f32_px(ly),
+        ),
+        TypedSize2D::new(Au::from_f32_px(lw), Au::from_f32_px(lh)),
     ))
 }
 
@@ -392,10 +409,11 @@ fn show_ime(cx: &mut JSContext, active: &mut ActiveParleyEditor) {
         .servo_parley_editor_editor()
         .call_get_text(&mut active.store)
         .unwrap_or_default();
-    let anchor = caret_viewport_point(cx, &canvas, active.last_caret);
+    let Some(rect) = caret_viewport_rect(cx, &canvas, active.last_caret) else {
+        return;
+    };
     if let Some(html_el) = canvas.downcast::<HTMLElement>() {
-        document.embedder_controls().show_embedder_control(
-            cx,
+        document.embedder_controls().show_embedder_control_rect(
             ControlElement::Ime(Dom::from_ref(html_el)),
             EmbedderControlRequest::InputMethod(InputMethodRequest {
                 input_method_type: InputMethodType::Text,
@@ -404,7 +422,7 @@ fn show_ime(cx: &mut JSContext, active: &mut ActiveParleyEditor) {
                 multiline: true,
                 allow_virtual_keyboard: true,
             }),
-            anchor,
+            rect,
         );
     }
 }
@@ -571,13 +589,13 @@ pub(crate) fn register_component(
         last_caret: None,
     };
     reset_blink_timer(editor_id, &mut active);
-    show_ime(cx, &mut active);
+    put_editor(editor_id, active);
 
+    // Focus AFTER inserting into ACTIVE_EDITORS so the `focus` event activates IME.
     if let Some(html_el) = canvas.downcast::<HTMLElement>() {
         html_el.Focus(cx, &Default::default());
     }
 
-    put_editor(editor_id, active);
     Ok(())
 }
 
@@ -586,6 +604,7 @@ pub(crate) fn handle_ime_commit(cx: &mut JSContext, focused_node: &Node, text: &
     let Some(editor_id) = find_editor_id_for_node(focused_node) else {
         return false;
     };
+    println!("[Servo Parley IME] commit: {text:?}");
     send_editor_event(cx, editor_id, EditorEvent::ComposeCommit(text.to_string()));
     true
 }
@@ -599,8 +618,16 @@ pub(crate) fn handle_ime_composition(
     let Some(editor_id) = find_editor_id_for_node(focused_node) else {
         return false;
     };
+    println!("[Servo Parley IME] composition {:?}: {:?}", comp.state, comp.data);
     let event = match comp.state {
-        CompositionState::Start | CompositionState::Update => {
+        CompositionState::Start => {
+            if comp.data.is_empty() {
+                return true;
+            }
+            let len = comp.data.len() as u32;
+            EditorEvent::ComposeUpdate((comp.data.clone(), Some((len, len))))
+        },
+        CompositionState::Update => {
             if comp.data.is_empty() {
                 EditorEvent::ComposeCancel
             } else {

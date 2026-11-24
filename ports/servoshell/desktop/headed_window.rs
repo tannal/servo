@@ -448,14 +448,16 @@ impl HeadedWindow {
     }
 
     fn show_ime(&self, control_id: EmbedderControlId, input_method: InputMethodControl) {
-        self.visible_input_method.set(Some(control_id));
+        let was_visible = self.visible_input_method.replace(Some(control_id)).is_some();
 
         let position = input_method.position().to_f32();
         let toolbar_height = (self.toolbar_height() * self.hidpi_scale_factor()).0;
-        self.winit_window.set_ime_allowed(true);
+        if !was_visible {
+            self.winit_window.set_ime_allowed(true);
+        }
         self.winit_window.set_ime_cursor_area(
             PhysicalPosition::new(position.min.x, position.min.y + toolbar_height),
-            PhysicalSize::new(position.width(), position.height()),
+            PhysicalSize::new(position.width().max(1.0), position.height().max(1.0)),
         );
     }
 

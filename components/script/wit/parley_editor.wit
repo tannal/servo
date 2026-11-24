@@ -11,6 +11,7 @@ interface fonts {
         weight: f32,
         stretch: f32,
         italic: bool,
+        sample-char: option<char>,
     }
 
     record resolved-font {

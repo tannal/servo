@@ -130,6 +130,25 @@ impl DocumentEmbedderControls {
         id
     }
 
+    #[cfg_attr(crown, expect(crown::unrooted_must_root))]
+    pub(crate) fn show_embedder_control_rect(
+        &self,
+        element: ControlElement,
+        request: EmbedderControlRequest,
+        rect: Rect<Au, CSSPixel>,
+    ) -> EmbedderControlId {
+        let id = self.next_control_id();
+        self.visible_elements
+            .borrow_mut()
+            .insert(id.index.into(), element);
+        let rect = PipelineRect {
+            rect,
+            pipeline_id: self.window.pipeline_id(),
+        };
+        self.send_embedder_control_request(request, id, rect);
+        id
+    }
+
     fn send_embedder_control_request(
         &self,
         request: EmbedderControlRequest,
