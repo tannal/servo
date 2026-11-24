@@ -21,6 +21,7 @@ extern crate malloc_size_of_derive;
 extern crate stylo_atoms;
 
 pub mod wasm_host;
+pub(crate) mod parley_editor;
 pub(crate) mod tailwind;
 
 #[macro_use]

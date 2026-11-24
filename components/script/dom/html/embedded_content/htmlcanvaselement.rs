@@ -257,6 +257,31 @@ impl HTMLCanvasElement {
         Some(context)
     }
 
+    /// Initialize or return the existing 2D rendering context with default settings.
+    /// Used by native WebAssembly components (such as `parley.wasm`) to submit
+    /// batched `CanvasCommand` frames directly to Servo's Vello/Canvas 2D backend.
+    pub(crate) fn get_or_init_default_2d_context(
+        &self,
+        cx: &mut js::context::JSContext,
+    ) -> Option<DomRoot<CanvasRenderingContext2D>> {
+        if let Some(ctx) = self.context() {
+            return match *ctx {
+                RenderingContext::Context2d(ref ctx) => Some(DomRoot::from_ref(ctx)),
+                _ => None,
+            };
+        }
+
+        let window = self.owner_window();
+        let size = self.get_size();
+        let settings = CanvasRenderingContext2DSettings::empty();
+        let context =
+            CanvasRenderingContext2D::new(cx, window.as_global_scope(), self, size, &settings)?;
+        self.set_rendering_context(cx.no_gc(), || {
+            RenderingContext::Context2d(Dom::from_ref(&*context))
+        });
+        Some(context)
+    }
+
     /// <https://html.spec.whatwg.org/multipage/#canvas-context-bitmaprenderer>
     fn get_or_init_bitmaprenderer_context(
         &self,

@@ -1,0 +1,133 @@
+package servo:parley-editor@0.1.0;
+
+interface console {
+    log: func(message: string);
+    error: func(message: string);
+}
+
+interface fonts {
+    record font-query {
+        families: list<string>,
+        weight: f32,
+        stretch: f32,
+        italic: bool,
+    }
+
+    record resolved-font {
+        font-id: u64,
+        face-index: u32,
+    }
+
+    /// Resolve a CSS-style font family stack via Servo's FontContext (system + @font-face).
+    resolve: func(query: font-query) -> option<resolved-font>;
+
+    /// Load raw SFNT/TTF/OTF bytes once per font-id for guest HarfRust shaping.
+    load-font-bytes: func(font-id: u64) -> option<list<u8>>;
+}
+
+interface surface {
+    record rect {
+        x: f32,
+        y: f32,
+        w: f32,
+        h: f32,
+    }
+
+    record rgba {
+        r: u8,
+        g: u8,
+        b: u8,
+        a: u8,
+    }
+
+    record glyph {
+        id: u32,
+        x: f32,
+        y: f32,
+    }
+
+    record glyph-run {
+        font-id: u64,
+        font-size: f32,
+        color: rgba,
+        glyphs: list<glyph>,
+    }
+
+    record paint-frame {
+        background: rgba,
+        rects: list<tuple<rect, rgba>>,
+        glyph-runs: list<glyph-run>,
+    }
+
+    /// Submit a complete editor frame (background, selection/caret rects, glyph runs)
+    /// to Servo's Canvas 2D backend (Vello GPU / Vello CPU / TinySkia).
+    present: func(width: u32, height: u32, frame: paint-frame);
+}
+
+interface editing {
+    record rect {
+        x: f32,
+        y: f32,
+        w: f32,
+        h: f32,
+    }
+
+    /// Mirrors Servo's `embedder_traits::EditingAction` + pointer/IME/resize events
+    /// so OS shortcuts, IME, and clipboard stay in the Servo host.
+    variant editor-event {
+        insert-text(string),
+        compose-update(tuple<string, option<tuple<u32, u32>>>),
+        compose-commit(string),
+        compose-cancel,
+        delete-backward,
+        delete-forward,
+        delete-word-backward,
+        move-left(bool),
+        move-right(bool),
+        move-up(bool),
+        move-down(bool),
+        move-word-left(bool),
+        move-word-right(bool),
+        move-line-start(bool),
+        move-line-end(bool),
+        select-all,
+        pointer-down(tuple<f32, f32, u32, bool>),
+        pointer-move(tuple<f32, f32>),
+        pointer-up,
+        resize(tuple<f32, f32>),
+        copy,
+        cut,
+        paste(string),
+    }
+
+    /// Feedback returned to Servo's host (EditContext / IME / Clipboard).
+    record editor-feedback {
+        caret-rect: option<rect>,
+        clipboard-write: option<string>,
+        dirty: bool,
+    }
+}
+
+interface editor {
+    use editing.{editor-event, editor-feedback};
+
+    /// Initialize the editor with initial text and viewport size.
+    init: func(initial-text: string, width: f32, height: f32);
+
+    /// Handle a host-dispatched editing, pointer, IME, clipboard, or resize event.
+    handle-event: func(event: editor-event) -> editor-feedback;
+
+    /// Render the current editor state to the host surface.
+    render: func();
+
+    /// Read the current plain text buffer (excluding active IME preedit).
+    get-text: func() -> string;
+}
+
+world parley-editor {
+    import console;
+    import fonts;
+    import surface;
+
+    export editor;
+}

@@ -126,6 +126,11 @@ pub(crate) fn dispatch_wasm_event(
     target: &EventTarget,
     event: &Event,
 ) {
+    if handler_id.starts_with("parley:") {
+        crate::parley_editor::dispatch_event(cx, handler_id, target, event);
+        return;
+    }
+
     let (app_id, handler_id) = split_handler_id(handler_id);
     let event_data = build_event_data(handler_id, target, event);
 
@@ -762,8 +767,16 @@ pub(crate) fn run_wasm_component(
 
     // Every native component is loaded through the same `<script>` path.  The
     // component type tells us which host world it belongs to: an application
-    // exports `run`, while the Tailwind component exports
-    // `servo:tailwind/compiler`.  This is a typed check, not a filename guess.
+    // exports `run`, the Parley text editor exports `servo:parley-editor/editor`,
+    // and the Tailwind component exports `servo:tailwind/compiler`.
+    let is_parley_editor = component
+        .component_type()
+        .exports(engine)
+        .any(|(name, _)| name.starts_with("servo:parley-editor/editor"));
+    if is_parley_editor {
+        return crate::parley_editor::register_component(cx, &component, global_scope);
+    }
+
     let is_application = component
         .component_type()
         .exports(engine)
