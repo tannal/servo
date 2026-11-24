@@ -212,6 +212,22 @@ fn rgba_to_color(c: Rgba) -> AbsoluteColor {
     AbsoluteColor::srgb_legacy(c.r, c.g, c.b, c.a as f32 / 255.0)
 }
 
+fn default_shadow() -> ShadowOptions {
+    ShadowOptions {
+        offset_x: 0.0,
+        offset_y: 0.0,
+        blur: 0.0,
+        color: AbsoluteColor::srgb_legacy(0, 0, 0, 0.0),
+    }
+}
+
+fn default_composition() -> CompositionOptions {
+    CompositionOptions {
+        alpha: 1.0,
+        composition_operation: Default::default(),
+    }
+}
+
 impl SurfaceHost for ParleyHostState {
     fn present(&mut self, width: u32, height: u32, frame: PaintFrame) {
         let cx = self.cx();
@@ -221,8 +237,6 @@ impl SurfaceHost for ParleyHostState {
 
         let mut commands = Vec::with_capacity(1 + frame.rects.len() + frame.glyph_runs.len());
         let identity = Transform2D::identity();
-        let shadow = ShadowOptions::default();
-        let composition = CompositionOptions::default();
 
         commands.push(CanvasCommand::FillRect(
             EuclidRect::new(
@@ -230,8 +244,8 @@ impl SurfaceHost for ParleyHostState {
                 Size2D::new(width as f32, height as f32),
             ),
             FillOrStrokeStyle::Color(rgba_to_color(frame.background)),
-            shadow,
-            composition,
+            default_shadow(),
+            default_composition(),
             identity,
         ));
 
@@ -239,8 +253,8 @@ impl SurfaceHost for ParleyHostState {
             commands.push(CanvasCommand::FillRect(
                 EuclidRect::new(Point2D::new(rect.x, rect.y), Size2D::new(rect.w, rect.h)),
                 FillOrStrokeStyle::Color(rgba_to_color(color)),
-                shadow,
-                composition,
+                default_shadow(),
+                default_composition(),
                 identity,
             ));
         }
@@ -279,8 +293,8 @@ impl SurfaceHost for ParleyHostState {
                 bounds,
                 vec![text_run],
                 FillOrStrokeStyle::Color(rgba_to_color(run.color)),
-                shadow,
-                composition,
+                default_shadow(),
+                default_composition(),
                 identity,
             ));
         }
@@ -413,7 +427,8 @@ fn show_ime(cx: &mut JSContext, active: &mut ActiveParleyEditor) {
     let Some(rect) = caret_viewport_rect(cx, &canvas, active.last_caret) else {
         return;
     };
-    if let Some(html_el) = canvas.downcast::<HTMLElement>() {
+    {
+        let html_el = canvas.upcast::<HTMLElement>();
         document.embedder_controls().show_embedder_control_rect(
             ControlElement::Ime(Dom::from_ref(html_el)),
             EmbedderControlRequest::InputMethod(InputMethodRequest {
@@ -603,9 +618,7 @@ pub(crate) fn register_component(
     put_editor(editor_id, active);
 
     // Focus AFTER inserting into ACTIVE_EDITORS so the `focus` event activates IME.
-    if let Some(html_el) = canvas.downcast::<HTMLElement>() {
-        html_el.Focus(cx, &Default::default());
-    }
+    canvas.upcast::<HTMLElement>().Focus(cx, &Default::default());
 
     Ok(())
 }
@@ -908,9 +921,7 @@ fn translate_dom_event(
                 return None;
             }
             event.PreventDefault();
-            if let Some(html_el) = canvas.downcast::<HTMLElement>() {
-                html_el.Focus(cx, &Default::default());
-            }
+            canvas.upcast::<HTMLElement>().Focus(cx, &Default::default());
             let (x, y) = canvas_local_point(cx, canvas, mouse);
             let click_count = mouse
                 .upcast::<crate::dom::uievent::UIEvent>()
