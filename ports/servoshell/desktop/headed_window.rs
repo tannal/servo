@@ -601,8 +601,10 @@ impl HeadedWindow {
                 window.queue_user_interface_command(UserInterfaceCommand::Back);
                 consumed = true;
             },
-            WindowEvent::KeyboardInput { .. } if self.gui.borrow().webview_widget_focused() => {
-                // Keyboard events should go to the WebView unless some other GUI
+            WindowEvent::KeyboardInput { .. } | WindowEvent::Ime(..)
+                if self.gui.borrow().webview_widget_focused() =>
+            {
+                // Keyboard and IME events should go to the WebView unless some other GUI
                 // component has keyboard focus.
                 //
                 // TODO: Release focus from the webview if keyboard focus moves past the beginning
