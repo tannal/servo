@@ -456,7 +456,6 @@ impl HeadedWindow {
         let y = position.min.y + toolbar_height;
         let w = position.width().max(1.0);
         let h = position.height().max(1.0);
-        eprintln!("[servoshell IME] show_ime was_visible={was_visible} area=({x:.1}, {y:.1}, {w:.1}x{h:.1})");
         if !was_visible {
             self.winit_window.set_ime_allowed(true);
         }
@@ -720,7 +719,6 @@ impl HeadedWindow {
                     });
                 },
                 WindowEvent::Ime(ime) => {
-                    eprintln!("[servoshell IME] winit event={ime:?}");
                     match ime {
                     Ime::Enabled => {
                         webview.notify_input_event(InputEvent::Ime(ImeEvent::Composition(
