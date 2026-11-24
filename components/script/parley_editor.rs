@@ -6,19 +6,26 @@
 //!
 //! Instantiates WebAssembly components exporting `servo:parley-editor/editor@0.1.0`,
 //! bridges Servo's `FontContext` (`servo:fonts`) and Canvas 2D / Vello backend
-//! (`servo:surface`), and routes keyboard, pointer, IME composition, and
-//! clipboard events from a `<canvas id="parley-editor">` element into Parley.
+//! (`servo:surface`), activates OS IME via `DocumentEmbedderControls`, drives
+//! native 530ms caret blinking on Servo's event loop, and routes keyboard,
+//! pointer, wheel, IME composition/commit, and clipboard events into Parley.
 
 #![allow(unsafe_code)]
 
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::sync::{Arc, LazyLock};
+use std::time::Duration;
 
-use embedder_traits::EmbedderMsg;
+use app_units::Au;
+use embedder_traits::{
+    EmbedderControlRequest, EmbedderMsg, InputMethodRequest, InputMethodType,
+};
+use euclid::Point2D as TypedPoint2D;
 use euclid::default::{Point2D, Rect as EuclidRect, Size2D, Transform2D};
 use fonts::{FontDataAndIndex, FontIdentifier};
 use js::context::JSContext;
+use keyboard_types::{CompositionEvent as KeyboardCompositionEvent, CompositionState};
 use script_bindings::codegen::GenericUnionTypes::{
     StringOrElementCreationOptions, TrustedHTMLOrTrustedScriptOrTrustedScriptURLOrString,
 };
@@ -30,11 +37,11 @@ use servo_canvas_traits::canvas::{
 };
 use servo_wasm::SERVO_WASM_ENGINE;
 use style::color::AbsoluteColor;
+use style_traits::CSSPixel;
 use wasmtime::Store;
 use wasmtime::component::{Component, HasSelf, Linker};
 
 use crate::canvas_context::CanvasContext;
-use crate::dom::bindings::codegen::Bindings::CompositionEventBinding::CompositionEventMethods;
 use crate::dom::bindings::codegen::Bindings::DocumentBinding::DocumentMethods;
 use crate::dom::bindings::codegen::Bindings::ElementBinding::ElementMethods;
 use crate::dom::bindings::codegen::Bindings::EventBinding::EventMethods;
@@ -44,12 +51,13 @@ use crate::dom::bindings::codegen::Bindings::KeyboardEventBinding::KeyboardEvent
 use crate::dom::bindings::codegen::Bindings::MouseEventBinding::MouseEventMethods;
 use crate::dom::bindings::codegen::Bindings::NodeBinding::NodeMethods;
 use crate::dom::bindings::codegen::Bindings::UIEventBinding::UIEventMethods;
+use crate::dom::bindings::codegen::Bindings::WheelEventBinding::WheelEventMethods;
 use crate::dom::bindings::codegen::Bindings::WindowBinding::WindowMethods;
 use crate::dom::bindings::codegen::DomTypeHolder::DomTypeHolder;
 use crate::dom::bindings::inheritance::Castable;
-use crate::dom::bindings::root::DomRoot;
+use crate::dom::bindings::root::{Dom, DomRoot};
 use crate::dom::bindings::str::DOMString;
-use crate::dom::compositionevent::CompositionEvent;
+use crate::dom::document_embedder_controls::ControlElement;
 use crate::dom::event::Event;
 use crate::dom::eventtarget::EventTarget;
 use crate::dom::globalscope::GlobalScope;
@@ -58,6 +66,8 @@ use crate::dom::html::htmlelement::HTMLElement;
 use crate::dom::keyboardevent::KeyboardEvent;
 use crate::dom::mouseevent::MouseEvent;
 use crate::dom::node::Node;
+use crate::dom::wheelevent::WheelEvent;
+use crate::event_loop::timers::{OneshotTimerCallback, OneshotTimerHandle};
 
 pub mod wit_parley {
     wasmtime::component::bindgen!({
@@ -68,20 +78,21 @@ pub mod wit_parley {
 
 use wit_parley::ParleyEditor;
 use wit_parley::servo::parley_editor::console::Host as ConsoleHost;
-use wit_parley::servo::parley_editor::editing::EditorEvent;
+use wit_parley::servo::parley_editor::editing::{EditorEvent, Rect as EditRect};
 use wit_parley::servo::parley_editor::fonts::{FontQuery, Host as FontsHost, ResolvedFont};
 use wit_parley::servo::parley_editor::surface::{Host as SurfaceHost, PaintFrame, Rgba};
 
 const DEFAULT_WIDTH: u32 = 960;
 const DEFAULT_HEIGHT: u32 = 640;
+const BLINK_INTERVAL: Duration = Duration::from_millis(530);
 
 const INITIAL_TEXT: &str = "Parley.wasm Text Editor in Servo\n\n\
-    Shaping, line breaking, bidi, selection, and hit-testing run in parley.wasm \
-    (wasm32-unknown-unknown Component Model).\n\
+    Shaping, line breaking, bidi, selection, undo/redo, IME composition, and hit-testing \
+    run in parley.wasm (wasm32-unknown-unknown Component Model).\n\
     Fonts come from Servo's FontContext and glyphs render directly through \
     Servo's Vello Canvas 2D backend.\n\n\
-    Click anywhere and start typing, select with mouse or Shift+Arrows, \
-    or copy/cut/paste with Ctrl/Cmd+C/X/V.";
+    Try typing (including Chinese/Japanese/Korean IME), dragging with the mouse, \
+    double/triple-clicking, Ctrl/Cmd+Z / Shift+Z undo/redo, or pasting long text.";
 
 struct CachedFont {
     identifier: FontIdentifier,
@@ -204,7 +215,6 @@ impl SurfaceHost for ParleyHostState {
         let shadow = ShadowOptions::default();
         let composition = CompositionOptions::default();
 
-        // 1. Background fill
         commands.push(CanvasCommand::FillRect(
             EuclidRect::new(
                 Point2D::new(0.0, 0.0),
@@ -216,7 +226,6 @@ impl SurfaceHost for ParleyHostState {
             identity,
         ));
 
-        // 2. Selection highlights, IME underlines, and caret
         for (rect, color) in frame.rects {
             commands.push(CanvasCommand::FillRect(
                 EuclidRect::new(Point2D::new(rect.x, rect.y), Size2D::new(rect.w, rect.h)),
@@ -227,7 +236,6 @@ impl SurfaceHost for ParleyHostState {
             ));
         }
 
-        // 3. Positioned glyph runs directly into Servo's Vello/Canvas 2D backend
         let bounds = EuclidRect::new(
             Point2D::new(0.0, 0.0),
             Size2D::new(width as f64, height as f64),
@@ -283,6 +291,10 @@ static PARLEY_LINKER: LazyLock<Linker<ParleyHostState>> = LazyLock::new(|| {
 struct ActiveParleyEditor {
     store: Store<ParleyHostState>,
     instance: ParleyEditor,
+    focused: bool,
+    blink_visible: bool,
+    blink_timer: Option<OneshotTimerHandle>,
+    last_caret: Option<EditRect>,
 }
 
 thread_local! {
@@ -301,12 +313,157 @@ fn put_editor(id: usize, editor: ActiveParleyEditor) {
     });
 }
 
-fn set_attr(cx: &mut JSContext, element: &crate::dom::element::Element, name: &'static str, val: &str) {
+fn find_editor_id_for_node(node: &Node) -> Option<usize> {
+    ACTIVE_EDITORS.with(|list| {
+        let list = list.borrow();
+        for (idx, slot) in list.iter().enumerate() {
+            if let Some(active) = slot {
+                if active.store.data().canvas.upcast::<Node>() == node {
+                    return Some(idx);
+                }
+            }
+        }
+        None
+    })
+}
+
+fn set_attr(
+    cx: &mut JSContext,
+    element: &crate::dom::element::Element,
+    name: &'static str,
+    val: &str,
+) {
     let value = TrustedHTMLOrTrustedScriptOrTrustedScriptURLOrString::String(DOMString::from(val));
     let _ = element.SetAttribute(cx, DOMString::from_static(name), value);
 }
 
-/// Instantiate `parley.wasm`, mount `<canvas id="parley-editor">`, and bind input events.
+fn canvas_local_point(
+    cx: &mut JSContext,
+    canvas: &HTMLCanvasElement,
+    mouse: &MouseEvent,
+) -> (f32, f32) {
+    // Use `border_box(cx)` (exact viewport-relative rect) rather than `OffsetX/Y`,
+    // and scale to the canvas backing dimensions so clicks and drags track the
+    // pointer 1:1 even when centered or styled with borders/CSS sizing.
+    let rect = canvas.upcast::<Node>().border_box(cx).unwrap_or_default();
+    let css_x = mouse.ClientX() as f32 - rect.origin.x.to_f32_px();
+    let css_y = mouse.ClientY() as f32 - rect.origin.y.to_f32_px();
+    let box_w = rect.size.width.to_f32_px();
+    let box_h = rect.size.height.to_f32_px();
+    let scale_x = if box_w > 0.0 {
+        canvas.Width() as f32 / box_w
+    } else {
+        1.0
+    };
+    let scale_y = if box_h > 0.0 {
+        canvas.Height() as f32 / box_h
+    } else {
+        1.0
+    };
+    (css_x * scale_x, css_y * scale_y)
+}
+
+fn caret_viewport_point(
+    cx: &mut JSContext,
+    canvas: &HTMLCanvasElement,
+    caret: Option<EditRect>,
+) -> Option<TypedPoint2D<Au, CSSPixel>> {
+    let rect = canvas.upcast::<Node>().border_box(cx)?;
+    let box_w = rect.size.width.to_f32_px();
+    let box_h = rect.size.height.to_f32_px();
+    let cw = canvas.Width().max(1) as f32;
+    let ch = canvas.Height().max(1) as f32;
+    let (lx, ly) = match caret {
+        Some(c) => (c.x * (box_w / cw), (c.y + c.h) * (box_h / ch)),
+        None => (24.0, 44.0),
+    };
+    Some(TypedPoint2D::new(
+        rect.origin.x + Au::from_f32_px(lx),
+        rect.origin.y + Au::from_f32_px(ly),
+    ))
+}
+
+fn show_ime(cx: &mut JSContext, active: &mut ActiveParleyEditor) {
+    let global = active.store.data().global_scope.clone();
+    let canvas = active.store.data().canvas.clone();
+    let document = global.as_window().Document();
+    let text = active
+        .instance
+        .servo_parley_editor_editor()
+        .call_get_text(&mut active.store)
+        .unwrap_or_default();
+    let anchor = caret_viewport_point(cx, &canvas, active.last_caret);
+    if let Some(html_el) = canvas.downcast::<HTMLElement>() {
+        document.embedder_controls().show_embedder_control(
+            cx,
+            ControlElement::Ime(Dom::from_ref(html_el)),
+            EmbedderControlRequest::InputMethod(InputMethodRequest {
+                input_method_type: InputMethodType::Text,
+                text,
+                insertion_point: None,
+                multiline: true,
+                allow_virtual_keyboard: true,
+            }),
+            anchor,
+        );
+    }
+}
+
+fn hide_ime(active: &ActiveParleyEditor) {
+    let global = active.store.data().global_scope.clone();
+    let canvas = active.store.data().canvas.clone();
+    let document = global.as_window().Document();
+    document
+        .embedder_controls()
+        .hide_embedder_control_for_element(canvas.upcast());
+}
+
+fn reset_blink_timer(editor_id: usize, active: &mut ActiveParleyEditor) {
+    let global = active.store.data().global_scope.clone();
+    if let Some(handle) = active.blink_timer.take() {
+        global.unschedule_callback(handle);
+    }
+    if active.focused {
+        active.blink_visible = true;
+        let handle = global.schedule_callback(
+            OneshotTimerCallback::ParleyBlink(editor_id),
+            BLINK_INTERVAL,
+        );
+        active.blink_timer = Some(handle);
+    }
+}
+
+/// Called by Servo's native event loop timer every 530ms to toggle caret visibility.
+pub(crate) fn on_blink_timer(cx: &mut JSContext, editor_id: usize) {
+    let Some(mut active) = take_editor(editor_id) else {
+        return;
+    };
+    active.blink_timer = None;
+
+    if active.focused {
+        active.store.data_mut().cx = cx;
+        let global = active.store.data().global_scope.clone();
+        active.blink_visible = !active.blink_visible;
+        let visible = active.blink_visible;
+        {
+            let _realm = enter_auto_realm::<DomTypeHolder>(cx, &*global);
+            let _ = active
+                .instance
+                .servo_parley_editor_editor()
+                .call_handle_event(&mut active.store, &EditorEvent::SetCursorVisible(visible));
+        }
+        let handle = global.schedule_callback(
+            OneshotTimerCallback::ParleyBlink(editor_id),
+            BLINK_INTERVAL,
+        );
+        active.blink_timer = Some(handle);
+    }
+
+    put_editor(editor_id, active);
+}
+
+/// Instantiate `parley.wasm`, mount `<canvas id="parley-editor">`, activate IME,
+/// and bind keyboard, pointer, wheel, focus, and blink timers.
 pub(crate) fn register_component(
     cx: &mut JSContext,
     component: &Arc<Component>,
@@ -353,7 +510,12 @@ pub(crate) fn register_component(
         .GetAttribute(cx, DOMString::from_static("tabindex"))
         .is_none()
     {
-        set_attr(cx, canvas.upcast::<crate::dom::element::Element>(), "tabindex", "0");
+        set_attr(
+            cx,
+            canvas.upcast::<crate::dom::element::Element>(),
+            "tabindex",
+            "0",
+        );
     }
 
     let width = canvas.Width().max(1);
@@ -365,16 +527,18 @@ pub(crate) fn register_component(
         list.len() - 1
     });
 
-    let target = canvas.upcast::<EventTarget>();
-    for event_type in [
-        "keydown",
-        "mousedown",
-        "mousemove",
-        "mouseup",
-        "compositionupdate",
-        "compositionend",
-    ] {
-        target.add_wasm_event_listener(
+    let canvas_target = canvas.upcast::<EventTarget>();
+    for event_type in ["keydown", "mousedown", "wheel", "focus", "blur"] {
+        canvas_target.add_wasm_event_listener(
+            DOMString::from(event_type),
+            DOMString::from(format!("parley:{editor_id}:{event_type}")),
+        );
+    }
+    // Listen for mousemove and mouseup on `window` so drag selection stays smooth
+    // even when the pointer leaves the canvas bounds.
+    let window_target = global_scope.as_window().upcast::<EventTarget>();
+    for event_type in ["mousemove", "mouseup"] {
+        window_target.add_wasm_event_listener(
             DOMString::from(event_type),
             DOMString::from(format!("parley:{editor_id}:{event_type}")),
         );
@@ -398,15 +562,117 @@ pub(crate) fn register_component(
         height as f32,
     )?;
 
+    let mut active = ActiveParleyEditor {
+        store,
+        instance,
+        focused: true,
+        blink_visible: true,
+        blink_timer: None,
+        last_caret: None,
+    };
+    reset_blink_timer(editor_id, &mut active);
+    show_ime(cx, &mut active);
+
     if let Some(html_el) = canvas.downcast::<HTMLElement>() {
         html_el.Focus(cx, &Default::default());
     }
 
-    put_editor(editor_id, ActiveParleyEditor { store, instance });
+    put_editor(editor_id, active);
     Ok(())
 }
 
-/// Dispatch a DOM event from `<canvas id="parley-editor">` into `parley.wasm`.
+/// Forward an OS `ImeEvent::Commit(text)` directly into the focused `parley.wasm` editor.
+pub(crate) fn handle_ime_commit(cx: &mut JSContext, focused_node: &Node, text: &str) -> bool {
+    let Some(editor_id) = find_editor_id_for_node(focused_node) else {
+        return false;
+    };
+    send_editor_event(cx, editor_id, EditorEvent::ComposeCommit(text.to_string()));
+    true
+}
+
+/// Forward an OS `ImeEvent::Composition` (Start / Update / End) into the focused `parley.wasm` editor.
+pub(crate) fn handle_ime_composition(
+    cx: &mut JSContext,
+    focused_node: &Node,
+    comp: &KeyboardCompositionEvent,
+) -> bool {
+    let Some(editor_id) = find_editor_id_for_node(focused_node) else {
+        return false;
+    };
+    let event = match comp.state {
+        CompositionState::Start | CompositionState::Update => {
+            if comp.data.is_empty() {
+                EditorEvent::ComposeCancel
+            } else {
+                let len = comp.data.len() as u32;
+                EditorEvent::ComposeUpdate((comp.data.clone(), Some((len, len))))
+            }
+        },
+        CompositionState::End => {
+            if comp.data.is_empty() {
+                EditorEvent::ComposeCancel
+            } else {
+                EditorEvent::ComposeCommit(comp.data.clone())
+            }
+        },
+    };
+    send_editor_event(cx, editor_id, event);
+    true
+}
+
+fn send_editor_event(cx: &mut JSContext, editor_id: usize, editor_event: EditorEvent) {
+    let Some(mut active) = take_editor(editor_id) else {
+        return;
+    };
+    active.store.data_mut().cx = cx;
+    let global = active.store.data().global_scope.clone();
+    let should_reset_blink = !matches!(
+        editor_event,
+        EditorEvent::SetCursorVisible(_)
+            | EditorEvent::SetFocused(false)
+            | EditorEvent::PointerUp
+            | EditorEvent::Scroll(_)
+    );
+
+    let mut caret_changed = false;
+    {
+        let _realm = enter_auto_realm::<DomTypeHolder>(cx, &*global);
+        match active
+            .instance
+            .servo_parley_editor_editor()
+            .call_handle_event(&mut active.store, &editor_event)
+        {
+            Ok(feedback) => {
+                if let Some(caret) = feedback.caret_rect {
+                    let prev = active.last_caret;
+                    caret_changed = prev.map_or(true, |p| {
+                        (p.x - caret.x).abs() > 0.5 || (p.y - caret.y).abs() > 0.5
+                    });
+                    active.last_caret = Some(caret);
+                }
+                if let Some(text) = feedback.clipboard_write {
+                    let window = global.as_window();
+                    window
+                        .send_to_embedder(EmbedderMsg::SetClipboardText(window.webview_id(), text));
+                }
+            },
+            Err(error) => {
+                eprintln!("[Servo Parley Error]: {error:?}");
+            },
+        }
+    }
+
+    if should_reset_blink && active.focused {
+        reset_blink_timer(editor_id, &mut active);
+    }
+    if caret_changed && active.focused && !matches!(editor_event, EditorEvent::ComposeUpdate(_)) {
+        show_ime(cx, &mut active);
+    }
+
+    put_editor(editor_id, active);
+}
+
+/// Dispatch a DOM event from `<canvas id="parley-editor">` or `window` into `parley.wasm`.
 pub(crate) fn dispatch_event(
     cx: &mut JSContext,
     handler_id: &str,
@@ -421,36 +687,62 @@ pub(crate) fn dispatch_event(
         return;
     };
 
-    let Some(mut active) = take_editor(editor_id) else {
+    let event_type = event.type_().to_string();
+    if event_type == "focus" {
+        if let Some(mut active) = take_editor(editor_id) {
+            active.focused = true;
+            active.store.data_mut().cx = cx;
+            let global = active.store.data().global_scope.clone();
+            {
+                let _realm = enter_auto_realm::<DomTypeHolder>(cx, &*global);
+                let _ = active
+                    .instance
+                    .servo_parley_editor_editor()
+                    .call_handle_event(&mut active.store, &EditorEvent::SetFocused(true));
+            }
+            reset_blink_timer(editor_id, &mut active);
+            show_ime(cx, &mut active);
+            put_editor(editor_id, active);
+        }
+        return;
+    }
+    if event_type == "blur" {
+        if let Some(mut active) = take_editor(editor_id) {
+            active.focused = false;
+            active.store.data_mut().cx = cx;
+            let global = active.store.data().global_scope.clone();
+            if let Some(handle) = active.blink_timer.take() {
+                global.unschedule_callback(handle);
+            }
+            hide_ime(&active);
+            {
+                let _realm = enter_auto_realm::<DomTypeHolder>(cx, &*global);
+                let _ = active
+                    .instance
+                    .servo_parley_editor_editor()
+                    .call_handle_event(&mut active.store, &EditorEvent::SetFocused(false));
+            }
+            put_editor(editor_id, active);
+        }
+        return;
+    }
+
+    let Some((global, canvas)) = ACTIVE_EDITORS.with(|list| {
+        let list = list.borrow();
+        let Some(Some(active)) = list.get(editor_id) else {
+            return None;
+        };
+        Some((
+            active.store.data().global_scope.clone(),
+            active.store.data().canvas.clone(),
+        ))
+    }) else {
         return;
     };
 
-    active.store.data_mut().cx = cx;
-    let global = active.store.data().global_scope.clone();
-    let canvas = active.store.data().canvas.clone();
-
-    let editor_event = translate_dom_event(cx, &global, &canvas, event);
-    if let Some(editor_event) = editor_event {
-        let _realm = enter_auto_realm::<DomTypeHolder>(cx, &*global);
-        match active
-            .instance
-            .servo_parley_editor_editor()
-            .call_handle_event(&mut active.store, &editor_event)
-        {
-            Ok(feedback) => {
-                if let Some(text) = feedback.clipboard_write {
-                    let window = global.as_window();
-                    window
-                        .send_to_embedder(EmbedderMsg::SetClipboardText(window.webview_id(), text));
-                }
-            },
-            Err(error) => {
-                eprintln!("[Servo Parley Error]: {error:?}");
-            },
-        }
+    if let Some(editor_event) = translate_dom_event(cx, &global, &canvas, event) {
+        send_editor_event(cx, editor_id, editor_event);
     }
-
-    put_editor(editor_id, active);
 }
 
 fn read_clipboard(global: &GlobalScope) -> Option<String> {
@@ -502,6 +794,46 @@ fn translate_dom_event(
                         let text = read_clipboard(global).unwrap_or_default();
                         return Some(EditorEvent::Paste(text));
                     },
+                    "z" | "Z" => {
+                        event.PreventDefault();
+                        return Some(if shift {
+                            EditorEvent::Redo
+                        } else {
+                            EditorEvent::Undo
+                        });
+                    },
+                    "y" | "Y" => {
+                        event.PreventDefault();
+                        return Some(EditorEvent::Redo);
+                    },
+                    "Home" => {
+                        event.PreventDefault();
+                        return Some(EditorEvent::MoveTextStart(shift));
+                    },
+                    "End" => {
+                        event.PreventDefault();
+                        return Some(EditorEvent::MoveTextEnd(shift));
+                    },
+                    #[cfg(target_os = "macos")]
+                    "ArrowLeft" => {
+                        event.PreventDefault();
+                        return Some(EditorEvent::MoveLineStart(shift));
+                    },
+                    #[cfg(target_os = "macos")]
+                    "ArrowRight" => {
+                        event.PreventDefault();
+                        return Some(EditorEvent::MoveLineEnd(shift));
+                    },
+                    #[cfg(target_os = "macos")]
+                    "ArrowUp" => {
+                        event.PreventDefault();
+                        return Some(EditorEvent::MoveTextStart(shift));
+                    },
+                    #[cfg(target_os = "macos")]
+                    "ArrowDown" => {
+                        event.PreventDefault();
+                        return Some(EditorEvent::MoveTextEnd(shift));
+                    },
                     _ => {},
                 }
             }
@@ -509,9 +841,11 @@ fn translate_dom_event(
             let mapped = match key.as_str() {
                 "Backspace" if word_mod => EditorEvent::DeleteWordBackward,
                 "Backspace" => EditorEvent::DeleteBackward,
+                "Delete" if word_mod => EditorEvent::DeleteWordForward,
                 "Delete" => EditorEvent::DeleteForward,
                 "Enter" => EditorEvent::InsertText("\n".to_string()),
                 "Tab" => EditorEvent::InsertText("    ".to_string()),
+                "Escape" => EditorEvent::CollapseSelection,
                 "ArrowLeft" if word_mod => EditorEvent::MoveWordLeft(shift),
                 "ArrowRight" if word_mod => EditorEvent::MoveWordRight(shift),
                 "ArrowLeft" => EditorEvent::MoveLeft(shift),
@@ -520,6 +854,8 @@ fn translate_dom_event(
                 "ArrowDown" => EditorEvent::MoveDown(shift),
                 "Home" => EditorEvent::MoveLineStart(shift),
                 "End" => EditorEvent::MoveLineEnd(shift),
+                "PageUp" => EditorEvent::PageUp(shift),
+                "PageDown" => EditorEvent::PageDown(shift),
                 s if !primary && !kb.CtrlKey() && !kb.MetaKey() && s.chars().count() == 1 => {
                     EditorEvent::InsertText(s.to_string())
                 },
@@ -530,32 +866,33 @@ fn translate_dom_event(
         },
         "mousedown" => {
             let mouse = event.downcast::<MouseEvent>()?;
+            if mouse.Button() != 0 {
+                return None;
+            }
+            event.PreventDefault();
             if let Some(html_el) = canvas.downcast::<HTMLElement>() {
                 html_el.Focus(cx, &Default::default());
             }
-            let click_count = mouse.upcast::<crate::dom::uievent::UIEvent>().Detail().max(1) as u32;
-            Some(EditorEvent::PointerDown((
-                mouse.OffsetX(cx) as f32,
-                mouse.OffsetY(cx) as f32,
-                click_count,
-                mouse.ShiftKey(),
-            )))
+            let (x, y) = canvas_local_point(cx, canvas, mouse);
+            let click_count = mouse
+                .upcast::<crate::dom::uievent::UIEvent>()
+                .Detail()
+                .max(1) as u32;
+            Some(EditorEvent::PointerDown((x, y, click_count, mouse.ShiftKey())))
         },
         "mousemove" => {
             let mouse = event.downcast::<MouseEvent>()?;
-            Some(EditorEvent::PointerMove((
-                mouse.OffsetX(cx) as f32,
-                mouse.OffsetY(cx) as f32,
-            )))
+            if mouse.Buttons() & 1 == 0 {
+                return Some(EditorEvent::PointerUp);
+            }
+            let (x, y) = canvas_local_point(cx, canvas, mouse);
+            Some(EditorEvent::PointerMove((x, y)))
         },
         "mouseup" => Some(EditorEvent::PointerUp),
-        "compositionupdate" => {
-            let comp = event.downcast::<CompositionEvent>()?;
-            Some(EditorEvent::ComposeUpdate((comp.Data().to_string(), None)))
-        },
-        "compositionend" => {
-            let comp = event.downcast::<CompositionEvent>()?;
-            Some(EditorEvent::ComposeCommit(comp.Data().to_string()))
+        "wheel" => {
+            let wheel = event.downcast::<WheelEvent>()?;
+            event.PreventDefault();
+            Some(EditorEvent::Scroll(*wheel.DeltaY() as f32))
         },
         _ => None,
     }

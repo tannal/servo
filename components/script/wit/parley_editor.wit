@@ -72,8 +72,8 @@ interface editing {
         h: f32,
     }
 
-    /// Mirrors Servo's `embedder_traits::EditingAction` + pointer/IME/resize events
-    /// so OS shortcuts, IME, and clipboard stay in the Servo host.
+    /// Mirrors Servo's `embedder_traits::EditingAction` + pointer/IME/scroll/blink events
+    /// so OS shortcuts, IME, timers, and clipboard stay in the Servo host.
     variant editor-event {
         insert-text(string),
         compose-update(tuple<string, option<tuple<u32, u32>>>),
@@ -82,6 +82,7 @@ interface editing {
         delete-backward,
         delete-forward,
         delete-word-backward,
+        delete-word-forward,
         move-left(bool),
         move-right(bool),
         move-up(bool),
@@ -90,11 +91,21 @@ interface editing {
         move-word-right(bool),
         move-line-start(bool),
         move-line-end(bool),
+        move-text-start(bool),
+        move-text-end(bool),
+        page-up(bool),
+        page-down(bool),
         select-all,
+        collapse-selection,
+        undo,
+        redo,
         pointer-down(tuple<f32, f32, u32, bool>),
         pointer-move(tuple<f32, f32>),
         pointer-up,
+        scroll(f32),
         resize(tuple<f32, f32>),
+        set-cursor-visible(bool),
+        set-focused(bool),
         copy,
         cut,
         paste(string),
@@ -114,7 +125,7 @@ interface editor {
     /// Initialize the editor with initial text and viewport size.
     init: func(initial-text: string, width: f32, height: f32);
 
-    /// Handle a host-dispatched editing, pointer, IME, clipboard, or resize event.
+    /// Handle a host-dispatched editing, pointer, IME, clipboard, scroll, or blink event.
     handle-event: func(event: editor-event) -> editor-feedback;
 
     /// Render the current editor state to the host surface.

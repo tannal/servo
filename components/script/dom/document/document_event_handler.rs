@@ -1970,6 +1970,14 @@ impl DocumentEventHandler {
             return composition_event_result;
         }
 
+        if crate::parley_editor::handle_ime_composition(
+            cx,
+            focused_element.upcast(),
+            &composition_event,
+        ) {
+            return composition_event_result | InputEventResult::Consumed;
+        }
+
         let editing_action = editing_action_from_composition_event(&composition_event);
         let editing_host = document.editing_context(cx.no_gc(), focused_element.upcast());
         if editing_host.perform_editing_action(cx, editing_action) {
@@ -1986,6 +1994,9 @@ impl DocumentEventHandler {
             // Event is only dispatched if there is a focused element.
             return Default::default();
         };
+        if crate::parley_editor::handle_ime_commit(cx, focused_element.upcast(), &text) {
+            return InputEventResult::Consumed;
+        }
         let editing_host = document.editing_context(cx.no_gc(), focused_element.upcast());
         if editing_host.perform_editing_action(cx, EditingAction::InsertText(text)) {
             return InputEventResult::Consumed;

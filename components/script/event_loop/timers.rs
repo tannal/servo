@@ -226,6 +226,8 @@ pub(crate) enum OneshotTimerCallback {
         #[ignore_malloc_size_of = "Closure"]
         completion: CompletionStep,
     },
+    /// Caret blink timer for native `parley.wasm` text editors.
+    ParleyBlink(usize),
 }
 
 impl OneshotTimerCallback {
@@ -241,6 +243,9 @@ impl OneshotTimerCallback {
                 // <https://html.spec.whatwg.org/multipage/#run-steps-after-a-timeout>
                 // Step 4.4 Perform completionSteps.
                 completion(cx, global);
+            },
+            OneshotTimerCallback::ParleyBlink(editor_id) => {
+                crate::parley_editor::on_blink_timer(cx, editor_id);
             },
         }
     }
