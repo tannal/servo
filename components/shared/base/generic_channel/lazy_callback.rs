@@ -74,7 +74,13 @@ where
                     cb.send(value)
                 } else {
                     // Init callback
-                    if let Ok(cb) = callback_receiver.borrow_mut().take().unwrap().recv() {
+                    let Some(receiver) = callback_receiver.borrow_mut().take() else {
+                        log::error!(
+                            "Could not get callback. LazyCallback::send invoked after receiver was already consumed"
+                        );
+                        return SendResult::Err(SendError::Disconnected);
+                    };
+                    if let Ok(cb) = receiver.recv() {
                         let _ = callback.set(cb);
                         callback.get().unwrap().send(value)
                     } else {

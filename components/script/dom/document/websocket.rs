@@ -142,6 +142,7 @@ impl WebSocket {
             global,
             proto,
         );
+        global.register_lifecycle_observer(&*websocket);
         if let Some(window) = global.downcast::<Window>() {
             window.Document().track_websocket(&websocket);
         }
@@ -236,6 +237,12 @@ impl WebSocket {
                 false
             },
         }
+    }
+}
+
+impl crate::dom::globalscope::lifecycle::LifecycleObserver for WebSocket {
+    fn on_context_destroyed(&self) {
+        self.make_disappear();
     }
 }
 

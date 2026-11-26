@@ -16,7 +16,6 @@ use script_bindings::codegen::GenericBindings::MediaStreamAudioSourceNodeBinding
 use script_bindings::codegen::GenericBindings::MediaStreamTrackAudioSourceNodeBinding::{
     MediaStreamTrackAudioSourceNodeMethods, MediaStreamTrackAudioSourceOptions,
 };
-use script_bindings::reflector::reflect_dom_object_with_proto;
 use script_bindings::trace::RootedTraceableBox;
 use servo_base::id::PipelineId;
 use servo_media::audio::context::{LatencyCategory, ProcessingState, RealTimeAudioContextOptions};
@@ -101,7 +100,13 @@ impl AudioContext {
     ) -> Fallible<DomRoot<AudioContext>> {
         let pipeline_id = window.pipeline_id();
         let context = AudioContext::new_inherited(options, pipeline_id)?;
-        let context = reflect_dom_object_with_proto(cx, Box::new(context), window, proto);
+        let context = script_bindings::reflector::reflect_weak_referenceable_dom_object_with_proto(
+            cx,
+            std::rc::Rc::new(context),
+            window,
+            proto,
+        );
+        window.as_global_scope().register_lifecycle_observer(&*context);
         context.resume();
         Ok(context)
     }
@@ -116,6 +121,12 @@ impl AudioContext {
 
     pub(crate) fn base(&self) -> DomRoot<BaseAudioContext> {
         DomRoot::from_ref(&self.context)
+    }
+}
+
+impl crate::dom::globalscope::lifecycle::LifecycleObserver for AudioContext {
+    fn on_context_destroyed(&self) {
+        self.context.tear_down();
     }
 }
 

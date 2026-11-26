@@ -4,6 +4,7 @@
 
 use std::cell::Cell;
 use std::collections::VecDeque;
+use std::rc::Rc;
 
 use cookie::{Cookie, SameSite};
 use dom_struct::dom_struct;
@@ -17,7 +18,7 @@ use net_traits::{
 };
 use script_bindings::cell::DomRefCell;
 use script_bindings::codegen::GenericBindings::CookieStoreBinding::CookieSameSite;
-use script_bindings::reflector::reflect_dom_object;
+use script_bindings::reflector::reflect_weak_referenceable_dom_object;
 use servo_base::generic_channel::{GenericCallback, GenericSend, GenericSender};
 use servo_base::id::CookieStoreId;
 use servo_url::ServoUrl;
@@ -159,14 +160,15 @@ impl CookieStore {
     }
 
     pub(crate) fn new(cx: &mut JSContext, global: &GlobalScope) -> DomRoot<CookieStore> {
-        let store = reflect_dom_object(
+        let store = reflect_weak_referenceable_dom_object(
             cx,
-            Box::new(CookieStore::new_inherited(
+            Rc::new(CookieStore::new_inherited(
                 global.resource_threads().core_thread.clone(),
             )),
             global,
         );
         store.setup_route();
+        global.register_lifecycle_observer(&*store);
         store
     }
 
@@ -205,6 +207,12 @@ impl CookieStore {
         if res.is_err() {
             error!("Failed to send cookiestore message to resource threads");
         }
+    }
+}
+
+impl crate::dom::globalscope::lifecycle::LifecycleObserver for CookieStore {
+    fn on_context_destroyed(&self) {
+        self.clean_up();
     }
 }
 

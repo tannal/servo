@@ -254,6 +254,16 @@ impl BaseAudioContext {
         self.state.set(state);
     }
 
+    /// Close the underlying audio graph and release backend callbacks when the
+    /// owning `GlobalScope` is torn down.
+    pub(crate) fn tear_down(&self) {
+        if self.state.get() == AudioContextState::Closed {
+            return;
+        }
+        self.state.set(AudioContextState::Closed);
+        let _ = self.audio_context_impl.lock().unwrap().close();
+    }
+
     pub(crate) fn resume(&self) {
         let this = Trusted::new(self);
         // Set the rendering thread state to 'running' and start

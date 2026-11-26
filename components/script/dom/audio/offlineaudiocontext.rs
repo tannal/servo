@@ -11,7 +11,6 @@ use js::context::JSContext;
 use js::realm::CurrentRealm;
 use js::rust::HandleObject;
 use script_bindings::cell::DomRefCell;
-use script_bindings::reflector::reflect_dom_object_with_proto;
 use servo_base::id::PipelineId;
 use servo_media::audio::context::OfflineAudioContextOptions as ServoMediaOfflineAudioContextOptions;
 
@@ -89,12 +88,20 @@ impl OfflineAudioContext {
         let pipeline_id = window.pipeline_id();
         let context =
             OfflineAudioContext::new_inherited(channel_count, length, sample_rate, pipeline_id)?;
-        Ok(reflect_dom_object_with_proto(
+        let context = script_bindings::reflector::reflect_weak_referenceable_dom_object_with_proto(
             cx,
-            Box::new(context),
+            std::rc::Rc::new(context),
             window,
             proto,
-        ))
+        );
+        window.as_global_scope().register_lifecycle_observer(&*context);
+        Ok(context)
+    }
+}
+
+impl crate::dom::globalscope::lifecycle::LifecycleObserver for OfflineAudioContext {
+    fn on_context_destroyed(&self) {
+        self.context.tear_down();
     }
 }
 
